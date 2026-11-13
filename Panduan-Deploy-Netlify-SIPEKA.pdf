@@ -1,0 +1,187 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [7 0 R 9 0 R 11 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>
+endobj
+6 0 obj
+<< /Length 4703 >>
+stream
+0.96 0.98 0.99 rg 0 0 595 842 re f
+0.00 0.36 0.28 rg 0 665 595 177 re f
+0.70 0.91 0.83 rg BT /F2 10 Tf 1 0 0 1 44 792 Tm (PANDUAN PRAKTIS) Tj ET
+1 1 1 rg BT /F2 29 Tf 1 0 0 1 44 746 Tm (DEPLOY SIPEKA) Tj ET
+1 1 1 rg BT /F1 22 Tf 1 0 0 1 44 710 Tm (ke Netlify) Tj ET
+0.88 0.96 0.93 rg BT /F1 10 Tf 1 0 0 1 44 683 Tm (Langkah demi langkah, dari folder proyek hingga website online.) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.5 Tf 1 0 0 1 44 635 Tm (Dokumen ini menjelaskan konfigurasi dan dua cara menerbitkan versi statis SIPEKA Klaim di Netlify.) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.5 Tf 1 0 0 1 44 621 Tm (Pilih deploy manual untuk cara tercepat, atau sambungkan repository GitHub agar deploy berjalan) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.5 Tf 1 0 0 1 44 607 Tm (otomatis setiap kali ada perubahan.) Tj ET
+0.00 0.36 0.28 rg BT /F2 15 Tf 1 0 0 1 44 584 Tm (Sebelum mulai) Tj ET
+0.00 0.62 0.36 rg 44 575 507 0.7 re f
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 55 558 Tm (- Siapkan empat file di folder proyek: index.html, app.js, styles.css, dan netlify.toml. Pastikan) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 55 545 Tm (- index.html berada di root folder, bukan di dalam subfolder tambahan.) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 55 529 Tm (- Aplikasi ini tidak memerlukan backend atau proses build. Konfigurasi Netlify yang disertakan) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 55 516 Tm (- menetapkan publish directory ke root proyek.) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 55 500 Tm (- Siapkan akun Netlify. Untuk kaedah Git, siapkan juga akun GitHub dan repository yang berisi) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 55 487 Tm (- file-file proyek tersebut.) Tj ET
+0.00 0.36 0.28 rg BT /F2 15 Tf 1 0 0 1 44 467 Tm (Kaedah A - Deploy manual \(paling cepat\)) Tj ET
+0.00 0.62 0.36 rg 44 458 507 0.7 re f
+0.00 0.62 0.36 rg BT /F2 10 Tf 1 0 0 1 46 441 Tm (01) Tj ET
+0.12 0.20 0.31 rg BT /F2 10.5 Tf 1 0 0 1 76 441 Tm (Buka Netlify Drop) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 426 Tm (Kunjungi https://app.netlify.com/drop dan log masuk atau buat akun Netlify.) Tj ET
+0.00 0.62 0.36 rg BT /F2 10 Tf 1 0 0 1 46 406 Tm (02) Tj ET
+0.12 0.20 0.31 rg BT /F2 10.5 Tf 1 0 0 1 76 406 Tm (Pilih folder yang benar) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 391 Tm (Di komputer, buka folder proyek SIPEKA. Pastikan index.html, app.js, styles.css, dan) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 378 Tm (netlify.toml terlihat di tingkat teratas.) Tj ET
+0.00 0.62 0.36 rg BT /F2 10 Tf 1 0 0 1 46 358 Tm (03) Tj ET
+0.12 0.20 0.31 rg BT /F2 10.5 Tf 1 0 0 1 76 358 Tm (Unggah proyek) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 343 Tm (Seret folder proyek ke area unggah Netlify. Jika folder ditolak, buat ZIP yang berisi isi proyek) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 330 Tm (secara langsung \(bukan satu folder pembungkus\), kemudian unggah ZIP tersebut.) Tj ET
+0.00 0.62 0.36 rg BT /F2 10 Tf 1 0 0 1 46 310 Tm (04) Tj ET
+0.12 0.20 0.31 rg BT /F2 10.5 Tf 1 0 0 1 76 310 Tm (Tunggu deploy selesai) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 295 Tm (Netlify akan mengunggah file dan memberikan alamat seperti https://nama-acak.netlify.app. Klik) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 282 Tm (alamat tersebut untuk membuka website.) Tj ET
+0.00 0.62 0.36 rg BT /F2 10 Tf 1 0 0 1 46 262 Tm (05) Tj ET
+0.12 0.20 0.31 rg BT /F2 10.5 Tf 1 0 0 1 76 262 Tm (Atur nama website \(opsional\)) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 247 Tm (Dari dashboard site, buka Site configuration atau Site settings, lalu cari pengaturan nama site.) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 234 Tm (Ganti nama subdomain jika nama yang diinginkan masih tersedia.) Tj ET
+0.00 0.36 0.28 rg BT /F2 15 Tf 1 0 0 1 44 210 Tm (Kaedah B - Deploy berterusan melalui GitHub) Tj ET
+0.00 0.62 0.36 rg 44 201 507 0.7 re f
+0.00 0.62 0.36 rg BT /F2 10 Tf 1 0 0 1 46 184 Tm (01) Tj ET
+0.12 0.20 0.31 rg BT /F2 10.5 Tf 1 0 0 1 76 184 Tm (Masukkan proyek ke GitHub) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 169 Tm (Buat repository baru di GitHub, lalu unggah empat file proyek ke root repository. Repository) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 156 Tm (dapat public atau private; berikan Netlify akses ke repository private saat diminta.) Tj ET
+0.00 0.62 0.36 rg BT /F2 10 Tf 1 0 0 1 46 136 Tm (02) Tj ET
+0.12 0.20 0.31 rg BT /F2 10.5 Tf 1 0 0 1 76 136 Tm (Import proyek di Netlify) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 121 Tm (Di dashboard Netlify, pilih Add new site atau Add new project, lalu Import an existing project.) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 108 Tm (Pilih GitHub dan berikan izin akses yang diminta.) Tj ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> >> /Contents 6 0 R >>
+endobj
+8 0 obj
+<< /Length 5331 >>
+stream
+1 1 1 rg 0 0 595 842 re f
+0.00 0.36 0.28 rg BT /F2 8 Tf 1 0 0 1 42 808 Tm (SIPEKA KLAIM  |  PANDUAN DEPLOY NETLIFY) Tj ET
+0.80 0.86 0.89 rg 42 796 511 1 re f
+0.00 0.62 0.36 rg BT /F2 10 Tf 1 0 0 1 46 772 Tm (03) Tj ET
+0.12 0.20 0.31 rg BT /F2 10.5 Tf 1 0 0 1 76 772 Tm (Pilih repository) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 757 Tm (Pilih repository SIPEKA Klaim. Jika repository tidak terlihat, periksa izin akses GitHub untuk) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 744 Tm (Netlify.) Tj ET
+0.00 0.62 0.36 rg BT /F2 10 Tf 1 0 0 1 46 724 Tm (04) Tj ET
+0.12 0.20 0.31 rg BT /F2 10.5 Tf 1 0 0 1 76 724 Tm (Isi build settings) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 709 Tm (Untuk site statis ini, biarkan Build command kosong dan tetapkan Publish directory ke titik \(.\).) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 696 Tm (Jika Netlify menawarkan Framework preset, pilih None atau Other. Base directory dapat dibiarkan) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 683 Tm (kosong.) Tj ET
+0.00 0.62 0.36 rg BT /F2 10 Tf 1 0 0 1 46 663 Tm (05) Tj ET
+0.12 0.20 0.31 rg BT /F2 10.5 Tf 1 0 0 1 76 663 Tm (Deploy dan tunggu) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 648 Tm (Tekan Deploy site. Netlify akan membaca netlify.toml dari root repository dan menerbitkan site.) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 635 Tm (Setiap push berikutnya ke branch produksi akan memicu deploy baru.) Tj ET
+0.00 0.36 0.28 rg BT /F2 15 Tf 1 0 0 1 44 611 Tm (Konfigurasi proyek Netlify) Tj ET
+0.00 0.62 0.36 rg 44 602 507 0.7 re f
+0.12 0.20 0.31 rg BT /F1 9.5 Tf 1 0 0 1 44 585 Tm (Fail netlify.toml di root proyek sudah berisi konfigurasi minimum. Build command tidak diperlukan) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.5 Tf 1 0 0 1 44 571 Tm (karena file HTML, CSS, dan JavaScript disajikan langsung. Publish directory titik bermaksud root) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.5 Tf 1 0 0 1 44 557 Tm (repository.) Tj ET
+0.94 0.96 0.97 rg 44 423 507 121 re f
+0.12 0.20 0.31 rg BT /F3 9 Tf 1 0 0 1 56 526 Tm ([build]) Tj ET
+0.12 0.20 0.31 rg BT /F3 9 Tf 1 0 0 1 56 511 Tm (  publish = ".") Tj ET
+0.12 0.20 0.31 rg BT /F3 9 Tf 1 0 0 1 56 496 Tm () Tj ET
+0.12 0.20 0.31 rg BT /F3 9 Tf 1 0 0 1 56 481 Tm ([[redirects]]) Tj ET
+0.12 0.20 0.31 rg BT /F3 9 Tf 1 0 0 1 56 466 Tm (  from = "/SIPEKA-Klaim.html") Tj ET
+0.12 0.20 0.31 rg BT /F3 9 Tf 1 0 0 1 56 451 Tm (  to = "/") Tj ET
+0.12 0.20 0.31 rg BT /F3 9 Tf 1 0 0 1 56 436 Tm (  status = 301) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.5 Tf 1 0 0 1 44 409 Tm (Aturan redirect 301 menjaga URL lama /SIPEKA-Klaim.html tetap menuju halaman utama. Jangan hapus) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.5 Tf 1 0 0 1 44 395 Tm (file netlify.toml jika ingin redirect tersebut tetap aktif.) Tj ET
+0.00 0.36 0.28 rg BT /F2 15 Tf 1 0 0 1 44 372 Tm (Setelah website online) Tj ET
+0.00 0.62 0.36 rg 44 363 507 0.7 re f
+0.00 0.62 0.36 rg BT /F2 10 Tf 1 0 0 1 46 346 Tm (01) Tj ET
+0.12 0.20 0.31 rg BT /F2 10.5 Tf 1 0 0 1 76 346 Tm (Uji halaman utama) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 331 Tm (Buka URL netlify.app dari browser lain atau mode privat. Pastikan halaman SIPEKA tampil tanpa) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 318 Tm (error di Console browser.) Tj ET
+0.00 0.62 0.36 rg BT /F2 10 Tf 1 0 0 1 46 298 Tm (02) Tj ET
+0.12 0.20 0.31 rg BT /F2 10.5 Tf 1 0 0 1 76 298 Tm (Uji aset dan fitur) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 283 Tm (Periksa gaya halaman, tambah file percobaan, dan uji fungsi PDF/OCR serta ekspor yang) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 270 Tm (diperlukan. Fitur PDF/OCR memerlukan koneksi untuk memuat pustaka dari CDN eksternal.) Tj ET
+0.00 0.62 0.36 rg BT /F2 10 Tf 1 0 0 1 46 250 Tm (03) Tj ET
+0.12 0.20 0.31 rg BT /F2 10.5 Tf 1 0 0 1 76 250 Tm (Uji redirect lama) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 235 Tm (Buka https://alamat-site.netlify.app/SIPEKA-Klaim.html dan pastikan browser diarahkan ke halaman) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 222 Tm (utama.) Tj ET
+0.00 0.62 0.36 rg BT /F2 10 Tf 1 0 0 1 46 202 Tm (04) Tj ET
+0.12 0.20 0.31 rg BT /F2 10.5 Tf 1 0 0 1 76 202 Tm (Aktifkan domain sendiri \(opsional\)) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 187 Tm (Di pengaturan domain site, pilih Add a domain atau Set up a custom domain, ikuti instruksi DNS) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 76 174 Tm (Netlify, lalu tunggu verifikasi dan sertifikat HTTPS selesai.) Tj ET
+0.00 0.36 0.28 rg BT /F2 15 Tf 1 0 0 1 44 150 Tm (Data dan privasi) Tj ET
+0.00 0.62 0.36 rg 44 141 507 0.7 re f
+0.12 0.20 0.31 rg BT /F1 9.5 Tf 1 0 0 1 44 124 Tm (Dokumen klaim yang diproses disimpan di penyimpanan browser pada perangkat pengguna, termasuk) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.5 Tf 1 0 0 1 44 110 Tm (IndexedDB; dokumen tidak dikirim ke server Netlify sebagai bagian dari pemrosesan biasa. Data) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.5 Tf 1 0 0 1 44 96 Tm (browser tidak otomatis berpindah ke komputer atau browser lain. Gunakan fitur folder cadangan) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.5 Tf 1 0 0 1 44 82 Tm (aplikasi, dan jangan gunakan komputer umum untuk data sensitif.) Tj ET
+0.80 0.86 0.89 rg 42 48 511 1 re f
+0.40 0.48 0.55 rg BT /F1 8 Tf 1 0 0 1 42 32 Tm (Panduan untuk file proyek SIPEKA Klaim) Tj ET
+0.40 0.48 0.55 rg BT /F1 8 Tf 1 0 0 1 510 32 Tm (Halaman 2) Tj ET
+endstream
+endobj
+9 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> >> /Contents 8 0 R >>
+endobj
+10 0 obj
+<< /Length 2167 >>
+stream
+1 1 1 rg 0 0 595 842 re f
+0.00 0.36 0.28 rg BT /F2 8 Tf 1 0 0 1 42 808 Tm (SIPEKA KLAIM  |  PANDUAN DEPLOY NETLIFY) Tj ET
+0.80 0.86 0.89 rg 42 796 511 1 re f
+0.12 0.20 0.31 rg BT /F1 9.5 Tf 1 0 0 1 44 772 Tm (Saat deploy, file aplikasi saja yang diunggah ke Netlify. Fitur PDF/OCR memuat pustaka dari CDN) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.5 Tf 1 0 0 1 44 758 Tm (yang sudah diizinkan di Content Security Policy. Gunakan HTTPS Netlify dan jangan menaruh dokumen) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.5 Tf 1 0 0 1 44 744 Tm (klaim atau data pasien di repository GitHub.) Tj ET
+0.00 0.36 0.28 rg BT /F2 15 Tf 1 0 0 1 44 721 Tm (Jika deploy gagal) Tj ET
+0.00 0.62 0.36 rg 44 712 507 0.7 re f
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 55 695 Tm (- Halaman 404 atau kosong: pastikan nama file tepat index.html dan berada di root publish) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 55 682 Tm (- directory. Periksa Deploy log untuk error.) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 55 666 Tm (- Perubahan tidak muncul: picu deploy baru atau gunakan Clear cache and deploy site dari) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 55 653 Tm (- dashboard. Periksa URL dan site yang sedang dibuka.) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 55 637 Tm (- PDF/OCR tidak berfungsi: periksa koneksi internet serta Console browser; pustaka terkait) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 55 624 Tm (- berasal dari CDN.) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 55 608 Tm (- Data sesi tidak muncul di perangkat lain: ini perilaku yang diharapkan karena data tersimpan di) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.2 Tf 1 0 0 1 55 595 Tm (- browser/perangkat asal. Pulihkan melalui folder cadangan aplikasi.) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.5 Tf 1 0 0 1 44 579 Tm (Ringkasnya: pilih folder proyek sebagai sumber deploy, kosongkan build command, tetapkan publish) Tj ET
+0.12 0.20 0.31 rg BT /F1 9.5 Tf 1 0 0 1 44 565 Tm (directory ke ., dan pastikan index.html berada di root.) Tj ET
+0.80 0.86 0.89 rg 42 48 511 1 re f
+0.40 0.48 0.55 rg BT /F1 8 Tf 1 0 0 1 42 32 Tm (Panduan untuk file proyek SIPEKA Klaim) Tj ET
+0.40 0.48 0.55 rg BT /F1 8 Tf 1 0 0 1 510 32 Tm (Halaman 3) Tj ET
+endstream
+endobj
+11 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> >> /Contents 10 0 R >>
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000134 00000 n 
+0000000231 00000 n 
+0000000333 00000 n 
+0000000428 00000 n 
+0000005183 00000 n 
+0000005329 00000 n 
+0000010712 00000 n 
+0000010858 00000 n 
+0000013078 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R >>
+startxref
+13226
+%%EOF

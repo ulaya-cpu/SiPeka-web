@@ -1,0 +1,7 @@
+[build]
+  publish = "."
+
+[[redirects]]
+  from = "/SIPEKA-Klaim.html"
+  to = "/"
+  status = 301

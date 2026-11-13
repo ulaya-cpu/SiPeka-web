@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!--
+  Content-Security-Policy: kunci pintu keluar-masuk data.
+  Hanya domain di bawah ini (pustaka PDF/OCR resmi) yang boleh diakses;
+  semua percobaan mengirim data ke domain lain (mis. jika suatu saat ada
+  skrip berbahaya yang menyusup) akan otomatis diblokir oleh browser.
+  Jika fitur OCR/pratinjau PDF tiba-tiba berhenti berfungsi setelah ini
+  dipasang: buka Console (F12) di browser, lihat pesan "Refused to..."/
+  "violates the following Content Security Policy", lalu tambahkan domain
+  yang disebutkan ke baris connect-src/worker-src/script-src di bawah.
+-->
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'self';
+  script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net;
+  worker-src 'self' blob: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net;
+  style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+  font-src 'self' data: https://fonts.gstatic.com;
+  img-src 'self' data: blob:;
+  connect-src 'self' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://tessdata.projectnaptha.com;
+  object-src 'none';
+  base-uri 'none';
+  form-action 'none';
+">
+<title>SIPEKA Klaim — Sistem Pemeriksaan Kelengkapan Administrasi Klaim</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<div class="app">
+
+  <header class="top">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 34 34" fill="none"><rect x="6" y="3" width="20" height="26" rx="3" fill="#E8F1FB" stroke="#0B5CAD" stroke-width="2"/><path d="M11 10h10M11 15h7" stroke="#0B5CAD" stroke-width="2" stroke-linecap="round"/><circle cx="24" cy="24" r="7.5" fill="#00A04B"/><path d="M20.6 24.2l2.3 2.3 4.2-4.6" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div>
+        <div class="brand-eyebrow">Sistem Pemeriksaan Kelengkapan Administrasi Klaim &mdash; BPJS Kesehatan</div>
+        <h1>SIPEKA Klaim</h1>
+        <div class="tagline">&ldquo;Screening lebih cepat, pemeriksaan lebih cermat.&rdquo;</div>
+      </div>
+    </div>
+    <div class="summary-strip" id="summaryStrip">
+      <button type="button" class="sum-box filterable" id="statTotalBox" data-filter="all" title="Tampilkan semua file"><span class="n" id="statTotal">0</span><span class="l">File</span></button>
+      <button type="button" class="sum-box ok filterable" id="statCompleteBox" data-filter="complete" title="Tampilkan hanya file lengkap"><span class="n" id="statComplete">0</span><span class="l">Lengkap</span></button>
+      <button type="button" class="sum-box warn filterable" id="statIncompleteBox" data-filter="incomplete" title="Tampilkan hanya file kurang"><span class="n" id="statIncomplete">0</span><span class="l">Kurang</span></button>
+      <button type="button" class="sum-box fail filterable" id="statFailedBox" data-filter="failed" title="Tampilkan hanya file yang gagal dibaca"><span class="n" id="statFailed">0</span><span class="l">Gagal baca</span></button>
+    </div>
+  </header>
+
+  <div class="save-bar">
+    <span class="save-status" id="saveStatus"><span class="dot"></span> Menyiapkan penyimpanan otomatis...</span>
+    <div class="save-actions">
+      <button class="save-action-btn primary" id="forceSaveBtn">Simpan Sekarang</button>
+      <button class="save-action-btn" id="connectWorkspaceBtn">Hubungkan Folder Cadangan</button>
+      <button class="save-action-btn" id="restoreWorkspaceBtn">Buka/Pulihkan Sesi</button>
+      <button class="clear-data-btn" id="clearDataBtn">Hapus semua data tersimpan</button>
+    </div>
+  </div>
+  <div class="workspace-panel">
+    <span><strong>Perlindungan sesi dua lapis:</strong> “Simpan Sekarang” mengamankan perubahan ke browser. Folder Cadangan menyimpan sesi, PDF verifikasi, kolektif, Sampling, dan hasil Obat agar dapat dipulihkan tanpa mengulang pekerjaan. Untuk ribuan dokumen, hubungkan lebih dulu lalu pilih folder kosong khusus SIPEKA.</span>
+    <span class="workspace-status warn" id="workspaceStatus">Folder cadangan belum terhubung.</span>
+  </div>
+  <div class="restore-banner" id="restoreBanner">
+    <span id="restoreBannerText"></span>
+    <button id="restoreBannerClose">Oke, mengerti</button>
+  </div>
+
+  <div class="view-switch" id="viewSwitch">
+    <button data-view="perfile" class="active">Verifikasi per Berkas</button>
+    <button data-view="batch">Verifikasi Kolektif per Layanan (Puskesmas)</button>
+    <button data-view="sampling">Sampling Ukuran Berkas</button>
+  </div>
+
+  <div id="perFileView">
+  <div class="layout">
+    <!-- SIDEBAR: category checklist editor -->
+    <aside>
+      <div class="tabbar" id="tabbar"></div>
+      <div class="editor-panel">
+        <h3 id="editorTitle"></h3>
+        <div class="editor-hint">Ini daftar checklist awal — sesuaikan nama dokumen &amp; kata kunci pencarian dengan SOP verifikasi Anda. Kata kunci dipisah koma; huruf besar/kecil diabaikan.</div>
+        <div id="itemEditor"></div>
+        <button class="add-item-btn" id="addItemBtn">+ Tambah jenis dokumen</button>
+      </div>
+    </aside>
+
+    <!-- MAIN -->
+    <main>
+      <div class="mode-bar">
+        <label for="modeSelect">Sedang memeriksa berkas untuk:</label>
+        <select id="modeSelect"></select>
+        <span class="mode-hint">File baru otomatis memakai kategori ini (bisa diubah lagi per file setelah diunggah)</span>
+      </div>
+
+      <div class="upload-zone" id="dropZone">
+        <div class="up-title">Seret file PDF ke sini, atau klik untuk pilih</div>
+        <div class="up-sub">Bisa pilih banyak file sekaligus</div>
+        <input type="file" id="fileInput" accept="application/pdf" multiple>
+        <div class="progress-line" id="progressLine"></div>
+      </div>
+      <div class="upload-progress" id="uploadProgress" role="status" aria-live="polite">
+        <div class="upp-head"><span class="upp-title" id="uppTitle">Mengunggah…</span><span class="upp-pct" id="uppPct">0%</span></div>
+        <div class="upp-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="uppTrack"><div class="upp-fill" id="uppFill"></div></div>
+        <div class="upp-steps"></div>
+        <div class="upp-meta" id="uppMeta"></div>
+      </div>
+      <div class="scale-note">
+        <strong>Mode skala besar aktif.</strong> Metadata, PDF, dan hasil analisis disimpan terpisah. PDF bertulisan digital dibaca maksimal tiga berkas bersamaan; OCR hasil scan berjalan satu per satu di latar belakang agar laptop tetap stabil. Untuk koleksi 10.000 berkas, gunakan Sampling dan proses kelompok prioritas secara bertahap.
+        <div class="auto-ocr-control">
+          <label><input type="checkbox" id="autoOcrToggle" checked> OCR otomatis untuk halaman scan</label>
+          <span class="auto-ocr-status" id="autoOcrStatus">OCR otomatis siap.</span>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <div class="count" id="resultCount"></div>
+        <select class="status-filter" id="statusFilterSelect" title="Saring berdasarkan status"></select>
+        <div class="name-search" id="resultSearchBox">
+          <input type="text" id="resultSearchInput" placeholder="Cari nama berkas...">
+          <button type="button" class="name-search-clear" id="resultSearchClear" title="Bersihkan pencarian">&times;</button>
+        </div>
+        <div class="toolbar-actions">
+          <button class="finish-btn" id="archiveAllBtn" title="Simpan ringkasan hasil lalu lepaskan seluruh PDF yang sudah selesai diproses dari antrean aktif">Simpan hasil &amp; hapus semua PDF selesai</button>
+          <button class="export-btn excel-btn" id="exportExcelBtn" title="Laporan rapi: No, SEP, Keterangan, dan rincian berkas yang kurang">Unduh Excel (.xlsx)</button>
+          <button class="export-btn" id="exportBtn">Unduh seluruh hasil (CSV)</button>
+        </div>
+      </div>
+
+      <div class="fail-bar" id="failBar"></div>
+      <div id="results"></div>
+      <div class="pagination" id="activePagination"></div>
+      <details class="archive-panel" id="archivedPanel" style="display:none">
+        <summary id="archivedPanelTitle"></summary>
+        <div class="archive-note">PDF asli sudah dilepas agar aplikasi tetap ringan. Ringkasan hasil di bawah tetap tersimpan, tetap masuk ke ekspor CSV, dan tidak mengubah daftar Sampling.</div>
+        <div id="archivedPanelBody"></div>
+        <div class="pagination" id="archivedPagination"></div>
+      </details>
+      <div class="empty-note" id="emptyNote">Belum ada berkas yang diperiksa.</div>
+    </main>
+  </div>
+  </div><!-- /perFileView -->
+
+  <div id="batchView" style="display:none">
+    <div class="batch-toolbar">
+      <button class="add-batch-btn" id="addBatchBtn">+ Tambah Layanan</button>
+      <div>
+        <span class="count" id="batchCount" style="margin-right:12px;"></span>
+        <button class="export-btn" id="exportBatchBtn">Unduh ringkasan kolektif (CSV)</button>
+      </div>
+    </div>
+    <div id="batchList"></div>
+    <div class="empty-note" id="batchEmptyNote">Belum ada layanan kolektif ditambahkan. Klik &ldquo;+ Tambah Layanan&rdquo; untuk memulai (ANC/USG, INC, KB, Rujukan &amp; Ambulan, dll).</div>
+  </div>
+
+  <div id="samplingView" style="display:none">
+    <div class="sampling-intro">
+      Unggah satu folder berisi banyak berkas PDF sekaligus untuk melihat ukuran tiap berkas (dalam KB).
+      Berkas yang ukurannya jauh lebih kecil dari biasanya sering menandakan halaman kosong, gagal scan,
+      atau berkas tidak lengkap &mdash; cocok dijadikan sampel pemeriksaan lebih dulu. Langkah ini terpisah
+      dari dua menu di atas dan tidak mengubah data yang sudah ada di sana.
+    </div>
+
+    <div class="sampling-upload-row">
+      <div class="upload-zone sampling-upload-zone" id="samplingDropZone">
+        <div class="up-title">Klik untuk pilih FOLDER berisi berkas PDF</div>
+        <div class="up-sub">Semua PDF di dalam folder (termasuk subfolder) akan didaftar besertaan ukurannya</div>
+        <input type="file" id="samplingFolderInput" webkitdirectory directory multiple accept="application/pdf,.pdf">
+      </div>
+      <div class="upload-zone sampling-upload-zone" id="samplingFilesDropZone">
+        <div class="up-title">atau pilih beberapa berkas PDF (tanpa folder)</div>
+        <div class="up-sub">Untuk browser yang tidak mendukung unggah folder</div>
+        <input type="file" id="samplingFilesInput" multiple accept="application/pdf,.pdf">
+      </div>
+    </div>
+    <div class="progress-line" id="samplingProgressLine"></div>
+    <div class="upload-progress" id="samplingUploadProgress" role="status" aria-live="polite">
+      <div class="upp-head"><span class="upp-title">Menyusun daftar berkas…</span><span class="upp-pct">0%</span></div>
+      <div class="upp-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="upp-fill"></div></div>
+      <div class="upp-steps"></div>
+      <div class="upp-meta"></div>
+    </div>
+
+    <div class="sampling-toolbar" id="samplingToolbar" style="display:none">
+      <div class="name-search" id="samplingSearchBox">
+        <input type="text" id="samplingSearchInput" placeholder="Cari nama berkas...">
+        <button type="button" class="name-search-clear" id="samplingSearchClear" title="Bersihkan pencarian">&times;</button>
+      </div>
+      <div class="sampling-threshold">
+        <label for="samplingThreshold">Tandai berkas di bawah</label>
+        <input type="number" id="samplingThreshold" value="100" min="0" step="10">
+        <span>KB sebagai &ldquo;dicurigai&rdquo;</span>
+      </div>
+      <div class="sampling-summary" id="samplingSummary"></div>
+      <div class="sampling-quickpick">
+        <label for="samplingQuickCount">Pilih</label>
+        <input type="number" id="samplingQuickCount" placeholder="mis. 50" min="1" step="1">
+        <span>berkas teratas (sesuai urutan saat ini)</span>
+        <button class="mini-action-btn primary" id="samplingQuickPickBtn">Pilih berkas</button>
+      </div>
+      <div class="sampling-actions">
+        <button class="mini-action-btn" id="samplingSelectSuspicious">Pilih yang dicurigai</button>
+        <button class="mini-action-btn" id="samplingSelectAll">Pilih semua</button>
+        <button class="mini-action-btn" id="samplingSelectNone">Kosongkan pilihan</button>
+        <button class="mini-action-btn" id="samplingSortToggle">Urutkan: Urutan unggah</button>
+        <button class="mini-action-btn danger" id="samplingClearBtn">Hapus daftar</button>
+      </div>
+    </div>
+
+    <div class="sampling-list" id="samplingList"></div>
+    <div class="pagination" id="samplingPagination"></div>
+    <div class="empty-note" id="samplingEmptyNote">Belum ada folder/berkas yang diunggah untuk sampling.</div>
+
+    <div class="sampling-verify-bar" id="samplingVerifyBar" style="display:none">
+      <span id="samplingSelectedCount">0 berkas dipilih</span>
+      <button class="export-btn" id="samplingVerifyBtn">Verifikasi berkas terpilih &rarr;</button>
+    </div>
+  </div>
+
+  <div id="medicineView" style="display:none">
+    <div class="medicine-intro">
+      <strong>Ekstraksi resep/obat.</strong> Unggah PDF resep secara massal. Aplikasi membaca nama peserta,
+      nomor SEP (termasuk yang tersimpan sebagai anotasi PDF), nama obat, jumlah obat, dan dosis.
+      Satu jenis obat dibuat menjadi satu baris agar hasil mudah diperiksa, difilter, dan diekspor.
+      Kolom hasil dapat dikoreksi langsung sebelum diunduh.
+      Pengenalan obat mendukung resep berpenanda R/ dan S/Signa seperti contoh; format lain dapat memerlukan koreksi.
+      Periksa hasil OCR dengan PDF asli. Dosis disalin sesuai sumber, bukan saran medis.
+    </div>
+    <div class="upload-zone" id="medicineDropZone">
+      <div class="up-title">Seret PDF resep ke sini, atau klik untuk pilih</div>
+      <div class="up-sub">Bisa memilih banyak file sekaligus; file diproses bertahap agar aplikasi tetap stabil</div>
+      <input type="file" id="medicineFileInput" accept="application/pdf,.pdf" multiple>
+      <div class="progress-line" id="medicineProgressLine"></div>
+    </div>
+    <div class="medicine-toolbar">
+      <div class="medicine-summary" id="medicineSummary">Belum ada hasil obat.</div>
+      <div class="toolbar-actions">
+        <button class="mini-action-btn danger" id="medicineClearBtn">Hapus hasil Obat</button>
+        <button class="export-btn" id="medicineCsvBtn">Unduh CSV</button>
+        <button class="export-btn" id="medicineExcelBtn">Unduh Excel (.xlsx)</button>
+      </div>
+    </div>
+    <div class="medicine-table-wrap" id="medicineTableWrap">
+      <table class="medicine-table">
+        <thead><tr>
+          <th>Nama Peserta</th><th>Nomor SEP</th><th>Nama Obat</th><th>Jumlah Obat</th><th>Dosis</th><th>Sumber File</th><th>Aksi</th>
+        </tr></thead>
+        <tbody id="medicineTableBody"></tbody>
+      </table>
+    </div>
+    <div class="pagination" id="medicinePagination"></div>
+    <div class="empty-note" id="medicineEmptyNote">Belum ada PDF resep yang diproses.</div>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js" integrity="sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" integrity="sha384-+mbV2IY1Zk/X1p/nWllGySJSUN8uMs+gUAN10Or95UBH0fpj6GfKgPmgC5EXieXG" crossorigin="anonymous"></script>
+<script src="./app.js"></script>
+</body>
+</html>
