@@ -429,6 +429,7 @@ function serializeEntry(e, includeBlob, includeAnalysis){
     externalStored:!!e.externalStored, externalAnalysisStored:!!e.externalAnalysisStored,
     externalPdfFolder:e.externalPdfFolder||"active-pdfs", externalFileName:e.externalFileName||`${e.id}.pdf`,
     ocrCandidates:Array.isArray(e.ocrCandidates)?e.ocrCandidates:[],
+    identity:e.identity||null,
     rosterIndex: (typeof e.rosterIndex === "number") ? e.rosterIndex : undefined,
     ocr:{
       running:false,
@@ -3171,6 +3172,157 @@ function evaluateContentWarning(entry, item){
     return false;
   }
 }
+/* ================= PEMERIKSAAN IDENTITAS (anti berkas tertukar / dokumen pasien lain terselip) =================
+   Tujuan: memastikan semua lembar dalam satu berkas memang milik pasien yang sama.
+   Hanya membaca teks yang sudah diekstrak (digital + OCR), jadi tidak menambah beban berarti.
+   Hasilnya PERINGATAN (lencana), tidak mengubah status Lengkap/Kurang.
+   - Nomor RM: nilai yang paling banyak muncul dijadikan acuan (bukan INA-CBG, yang sering
+     kosong/salah ketik). Halaman yang mencantumkan nomor RM lain ditandai.
+   - Nomor SEP: dicocokkan dengan nama file, dan tidak boleh ada lebih dari satu di teks digital.
+   - Nomor kartu: tidak boleh ada lebih dari satu di teks digital.
+   Format RM antar faskes berbeda ("00-64-66-69", "00646669", "007111"), jadi dibandingkan
+   setelah tanda hubung dan nol di depan dibuang. */
+const RM_NUMBER_SRC = "(\\d{2}-\\d{2}-\\d{2}-\\d{2}|\\d{4,8})(?![\\d/:-])";
+// Label diikuti langsung oleh nomornya, mis. "No.RM : 102089", "( MR : 102089 )", "MR. 007111".
+const RM_DIRECT_PATTERN = new RegExp("\\b(?:no(?:mor)?\\.?\\s*(?:rekam\\s*medi[sk]|r\\.?\\s?m)|mr)\\b\\s*[.:]?\\s*"+RM_NUMBER_SRC,"g");
+// Label dan nomor terpisah oleh label lain, mis. "No RM : Tgl Lahir : Jenis Kelamin : 00-64-23-84".
+const RM_LABEL_PATTERN = /\bno(?:mor)?\.?\s*(?:rekam\s*medi[sk]|r\.?\s?m)\b/g;
+const RM_LOOSE_NUMBER_PATTERN = new RegExp("(?<![\\d/:.,-])"+RM_NUMBER_SRC,"g");
+const RM_LOOSE_WINDOW = 90;
+// Angka yang didahului kata-kata ini bukan nomor RM (umur dalam hari, nomor registrasi, telepon, dst.).
+const RM_NOT_RM_CONTEXT = /(umur|hari|reg(?:istrasi)?|tagihan|pendaftaran|nota|telp|telepon|hp|nip|sip|kode\s*pos|rawat)\s*[.:]?\s*$/;
+function normalizeRmNumber(value){
+  return String(value||"").replace(/[^0-9]/g,"").replace(/^0+/,"");
+}
+function extractRmCandidates(pageText){
+  const text=String(pageText||"").toLowerCase();
+  const found=new Map(); // nomor ternormalisasi -> tulisan asli
+  const add=raw=>{
+    const norm=normalizeRmNumber(raw);
+    if(norm.length<3) return;
+    if(/^(19|20)\d{2}$/.test(raw)) return; // tahun, bukan nomor RM
+    if(!found.has(norm)) found.set(norm,raw);
+  };
+  let match;
+  RM_DIRECT_PATTERN.lastIndex=0;
+  while((match=RM_DIRECT_PATTERN.exec(text))) add(match[1]);
+  RM_LABEL_PATTERN.lastIndex=0;
+  while((match=RM_LABEL_PATTERN.exec(text))){
+    const start=match.index+match[0].length;
+    const windowText=text.slice(start,start+RM_LOOSE_WINDOW);
+    RM_LOOSE_NUMBER_PATTERN.lastIndex=0;
+    let numberMatch;
+    while((numberMatch=RM_LOOSE_NUMBER_PATTERN.exec(windowText))){
+      const before=windowText.slice(Math.max(0,numberMatch.index-24),numberMatch.index);
+      if(RM_NOT_RM_CONTEXT.test(before)) continue;
+      add(numberMatch[1]);
+      break; // cukup angka pertama yang layak setelah label
+    }
+  }
+  return found;
+}
+// Semua deret angka di halaman (tanda hubung dibuang, nol depan dibuang) untuk mengecek
+// apakah nomor RM acuan muncul di halaman itu, apa pun labelnya.
+function pageNumberTokens(pageText){
+  const tokens=new Set();
+  const matches=String(pageText||"").match(/\d+(?:-\d+)*/g)||[];
+  matches.forEach(raw=>{ const norm=normalizeRmNumber(raw); if(norm) tokens.add(norm); });
+  return tokens;
+}
+function extractAllSepNumbers(text){
+  const result=new Set();
+  const pattern=/(?:^|[^0-9a-z])((?:\d\s?){4}[a-z]\s?(?:\d\s?){7}v\s?(?:\d\s?){5}\d)(?![0-9])/gi;
+  const source=String(text||"");
+  let match;
+  while((match=pattern.exec(source))){
+    const sep=match[1].replace(/\s+/g,"").toUpperCase();
+    if(/^\d{4}[A-Z]\d{7}V\d{6}$/.test(sep)) result.add(sep);
+    pattern.lastIndex=match.index+match[0].length-1;
+  }
+  return result;
+}
+function extractCardNumbers(text){
+  // Nomor kartu JKN: 13 digit, diawali "000".
+  // Tidak boleh menempel pada huruf: kode barang seperti "B0000100001142" bukan nomor kartu.
+  return new Set(String(text||"").match(/(?<![\da-z])000\d{10}(?![\da-z])/gi)||[]);
+}
+// Mengembalikan ringkasan kecil yang ikut disimpan bersama metadata berkas, atau null bila
+// teks per halaman tidak tersedia (mis. sesi lama yang belum dianalisis ulang).
+function computeIdentityCheck(entry){
+  const pages=entryPageTextsForCheck(entry);
+  if(!pages) return null;
+  const ocrPages=entry.ocrPageTexts||{};
+  const perPage=pages.map(text=>extractRmCandidates(text));
+  // Pemungutan suara: nomor RM yang tercantum di paling banyak halaman menjadi acuan.
+  const votes=new Map();
+  perPage.forEach((candidates,idx)=>{
+    candidates.forEach((raw,norm)=>{
+      const row=votes.get(norm)||{norm,raw,count:0,onSep:false,first:idx};
+      row.count++;
+      if(/surat\s+el[ei]gibilitas\s+peserta/.test(pages[idx])) row.onSep=true;
+      votes.set(norm,row);
+    });
+  });
+  const ranked=Array.from(votes.values()).sort((a,b)=>(b.count-a.count)||((b.onSep?1:0)-(a.onSep?1:0))||(a.first-b.first));
+  const reference=ranked[0]||null;
+  const rmMismatch=[];
+  let rmPages=0;
+  if(reference){
+    pages.forEach((text,idx)=>{
+      if(pageNumberTokens(text).has(reference.norm)){ rmPages++; return; }
+      // Ekstraksi PDF kadang memecah angka ("1 36748"); coba lagi dengan spasi antar digit dirapatkan.
+      if(pageNumberTokens(String(text).replace(/(\d) (?=\d)/g,"$1")).has(reference.norm)){ rmPages++; return; }
+      const others=Array.from(perPage[idx].values());
+      if(others.length) rmMismatch.push({page:idx+1, rm:others[0], ocr:!!ocrPages[idx]});
+    });
+  }
+  const digitalText=entry.digitalText||"";
+  const sepInDigital=Array.from(extractAllSepNumbers(digitalText));
+  const sepInAll=extractAllSepNumbers(digitalText+" "+(entry.ocrText||""));
+  const sepFromName=extractSepNumber(entry.name);
+  const cards=Array.from(extractCardNumbers(digitalText));
+  return {
+    rm: reference ? reference.raw : "",
+    rmPages,
+    rmMismatch: rmMismatch.slice(0,20),
+    sepList: sepInDigital.slice(0,5),
+    // Nama file memuat nomor SEP, tetapi SEP itu tidak ada di teks digital maupun hasil OCR.
+    sepNameMismatch: !!(sepFromName && sepInDigital.length && !sepInAll.has(sepFromName)),
+    sepFromName: sepFromName||"",
+    cardList: cards.slice(0,5)
+  };
+}
+// Daftar kalimat peringatan identitas untuk satu berkas (kosong = tidak ada temuan).
+function identityWarnings(entry, duplicateSeps){
+  const warnings=[];
+  const info=entry&&entry.identity;
+  if(info){
+    (info.rmMismatch||[]).forEach(row=>{
+      warnings.push(`Halaman ${row.page}: No. RM ${row.rm} berbeda dari No. RM berkas (${info.rm})${row.ocr?" - hasil OCR, periksa manual":""}`);
+    });
+    if(info.sepNameMismatch) warnings.push(`No. SEP pada nama file (${info.sepFromName}) tidak ditemukan di dalam berkas; isi berkas memuat ${(info.sepList||[]).join(", ")}`);
+    else if((info.sepList||[]).length>1) warnings.push(`Berkas memuat lebih dari satu No. SEP: ${info.sepList.join(", ")}`);
+    if((info.cardList||[]).length>1) warnings.push(`Berkas memuat lebih dari satu No. Kartu: ${info.cardList.join(", ")}`);
+  }
+  if(duplicateSeps && entry && entry.sep && duplicateSeps.has(entry.sep)) warnings.push(`No. SEP ${entry.sep} juga ada di berkas lain (kemungkinan berkas ganda)`);
+  return warnings;
+}
+// Nomor SEP yang muncul di lebih dari satu berkas (antrean aktif + hasil tersimpan).
+function findDuplicateSeps(){
+  const counts=new Map();
+  const add=sep=>{ if(sep) counts.set(sep,(counts.get(sep)||0)+1); };
+  files.forEach(entry=>{ if(!entry.pending) add(entry.sep); });
+  archivedFiles.forEach(row=>add(row.sep));
+  const duplicates=new Set();
+  counts.forEach((count,sep)=>{ if(count>1) duplicates.add(sep); });
+  return duplicates;
+}
+let duplicateSepSet=new Set(); // diperbarui setiap renderResults
+function identityBadgeHtml(warnings){
+  if(!warnings||!warnings.length) return "";
+  return ` <span class="content-warn-badge" title="${escapeAttr(warnings.join("\n"))}">&#9888; Cek identitas (${warnings.length})</span>`;
+}
+
 function contentWarnBadgeHtml(kind){
   if(kind==="icd"){
     return ` <span class="content-warn-badge" title="Dokumen terdeteksi, tetapi kode diagnosis (ICD-10) tidak ditemukan di halaman tersebut. Periksa manual apakah diagnosis dan kodenya benar-benar terisi.">&#9888; Cek kode ICD</span>`;
@@ -3202,6 +3354,10 @@ function evaluateAgainstCat(entry, cat){
     status[item.id] = { source, manual, userTouched, na, contentWarning };
   });
   entry.itemsStatus = status;
+  try{
+    const identity=computeIdentityCheck(entry);
+    if(identity) entry.identity=identity; // bila teks halaman belum tersedia, hasil lama dipertahankan
+  }catch(err){ console.warn("Pemeriksaan identitas gagal, dilewati:",err); }
 }
 
 let reprocessTimer=null;
@@ -3267,6 +3423,8 @@ function archivedSummaryFromEntry(entry){
     isComplete: missing.length===0,
     missingNames: missing.map(item=>item.name),
     noteNames: cat ? fileConditionalNotes(entry, cat).map(item=>item.name) : [],
+    // Peringatan identitas per berkas (tanpa SEP ganda, yang dihitung ulang saat laporan dibuat).
+    identityNotes: entry.error ? [] : identityWarnings(entry, null),
     error: entry.error||null,
     fingerprint: entry.fingerprint||"",
     order:Number.isFinite(entry.order)?entry.order:0,
@@ -3343,7 +3501,7 @@ function renderArchivedPanel(){
 
 const RESULT_FILTER_LABELS={
   all:"Semua berkas", success:"Berhasil dibaca", complete:"Lengkap", incomplete:"Kurang",
-  failed:"Gagal dibaca", processing:"Sedang diproses"
+  failed:"Gagal dibaca", processing:"Sedang diproses", identity:"Peringatan identitas"
 };
 function entryReadStatus(entry){
   if(entry.pending) return "processing";
@@ -3354,6 +3512,7 @@ function statusMatchesFilter(entry,status){
   switch(resultFilter){
     case "success": return status==="complete"||status==="incomplete";
     case "failed": return status==="failed"||!!entry._retrying; // tetap terlihat selama dimuat ulang
+    case "identity": return !entry.pending && !entry.error && identityWarnings(entry,duplicateSepSet).length>0;
     default: return status===resultFilter;
   }
 }
@@ -3362,7 +3521,7 @@ function renderStatusFilterSelect(counts){
   if(!sel) return;
   const total=files.length;
   const n={all:total,success:counts.complete+counts.incomplete,complete:counts.complete,
-    incomplete:counts.incomplete,failed:counts.failed,processing:counts.processing};
+    incomplete:counts.incomplete,failed:counts.failed,processing:counts.processing,identity:counts.identity||0};
   sel.innerHTML=Object.keys(RESULT_FILTER_LABELS).map(key=>
     `<option value="${key}">${RESULT_FILTER_LABELS[key]} (${n[key]})</option>`).join("");
   sel.value=resultFilter;
@@ -3467,11 +3626,13 @@ function renderResults(){
 
   // Status dihitung sekali per berkas per render, lalu dipakai untuk statistik & filter.
   const statusById=new Map();
-  const counts={complete:0,incomplete:0,failed:0,processing:0};
+  const counts={complete:0,incomplete:0,failed:0,processing:0,identity:0};
+  duplicateSepSet=findDuplicateSeps();
   files.forEach(entry=>{
     const st=entryReadStatus(entry);
     statusById.set(entry.id,st);
     counts[st]++;
+    if(!entry.pending && !entry.error && identityWarnings(entry,duplicateSepSet).length) counts.identity++;
   });
   const completeCount=counts.complete, incompleteCount=counts.incomplete;
 
@@ -3534,6 +3695,7 @@ function renderResults(){
     if(entry.pending) badgeHtml = `<span class="badge loading">Memproses...</span>`;
     else if(entry.error) badgeHtml = `<span class="badge incomplete" title="${escapeAttr(entry.error)}">Gagal membaca PDF</span>`;
     else badgeHtml = isComplete ? completeBadgeHtml(fileConditionalNotes(entry).map(item=>item.name)) : `<span class="badge incomplete">Kurang ${missing.length} dokumen</span>`;
+    if(!entry.pending && !entry.error) badgeHtml += identityBadgeHtml(identityWarnings(entry,duplicateSepSet));
 
     const retryBtnHtml = entry.error ? `<button class="mini-action-btn retry-file-btn" type="button" ${retryAllState?"disabled":""} title="Muat PDF yang sama dan ulangi proses pembacaan.">Coba baca ulang</button>` : "";
     const archiveBtnHtml = (!entry.pending) ? `<button class="finish-btn archive-file-btn" type="button" ${ocrBusy?"disabled":""} title="Simpan hasil pemeriksaan lalu lepaskan PDF dari antrean aktif. Data tetap ikut ke CSV dan Sampling tidak berubah.">${ocrBusy?"Menunggu OCR…":"Selesai &amp; hapus PDF"}</button>` : "";
@@ -3852,17 +4014,21 @@ function verificationReportRows(){
     ...archivedFiles.map(row=>Object.assign({},row)),
     ...files.filter(entry=>!entry.pending).map(archivedSummaryFromEntry)
   ].sort((a,b)=>(a.order||0)-(b.order||0));
+  const duplicateSeps=findDuplicateSeps();
   return rows.map((row,idx)=>{
     const missing=row.missingNames||[];
     let keterangan, rincian;
-    if(row.error){ keterangan="Gagal Baca"; rincian=row.error; }
     const notes=row.noteNames||[];
     const noteLines=notes.length?["Catatan - dokumen kondisional tidak ditemukan:",...notes.map((name,i)=>`${i+1}. ${name}`)]:[];
+    // Peringatan identitas tidak mengubah Keterangan; ditulis di kolom Rincian agar ikut tercetak.
+    const identity=(row.identityNotes||[]).slice();
+    if(row.sep && duplicateSeps.has(row.sep)) identity.push(`No. SEP ${row.sep} juga ada di berkas lain (kemungkinan berkas ganda)`);
+    if(identity.length && !row.error) noteLines.push("PERINGATAN IDENTITAS:",...identity.map((text,i)=>`${i+1}. ${text}`));
     let lineCount=1;
     if(row.error){ keterangan="Gagal Baca"; rincian=row.error; }
     else if(row.isComplete){
       keterangan="Lengkap"; // kolom Keterangan tetap 3 nilai baku; catatan ditulis di kolom Rincian
-      rincian=notes.length?noteLines.join("\n"):"-";
+      rincian=noteLines.length?noteLines.join("\n"):"-";
       lineCount=Math.max(1,noteLines.length);
     }else{
       const parts=missing.map((name,i)=>`${i+1}. ${name}`).concat(noteLines);
@@ -4022,6 +4188,7 @@ document.getElementById("exportBtn").onclick = async ()=>{
   });
   const catKeys = Object.keys(byCategory);
 
+  const csvDuplicateSeps=findDuplicateSeps();
   function buildCsvForCategory(catKey, resultRows){
     const rows = [["No Urut","ID Hasil","Nama File","Kategori","Status Keseluruhan File","Jumlah Dokumen Kurang","Jenis Baris","Rincian Dokumen Kurang","Waktu Disimpan","Posisi Data"]];
     resultRows.forEach((row,idx)=>{
@@ -4044,6 +4211,17 @@ document.getElementById("exportBtn").onclick = async ()=>{
           noUrut, row.id, row.name, catLabel, fileStatus, missing.length,
           `Dokumen Kurang ${mIdx+1} dari ${missing.length}`,
           docName,
+          completedAt, row.stored?"Hasil tersimpan":"Antrean aktif"
+        ]);
+      });
+      // Peringatan identitas (No. RM/SEP/kartu tidak konsisten, SEP ganda) - tidak mengubah status berkas
+      const identityRows=(row.identityNotes||[]).slice();
+      if(row.sep && csvDuplicateSeps.has(row.sep)) identityRows.push(`No. SEP ${row.sep} juga ada di berkas lain (kemungkinan berkas ganda)`);
+      if(!row.error) identityRows.forEach((text,iIdx)=>{
+        rows.push([
+          noUrut, row.id, row.name, catLabel, fileStatus, missing.length,
+          `Peringatan Identitas ${iIdx+1} dari ${identityRows.length}`,
+          text,
           completedAt, row.stored?"Hasil tersimpan":"Antrean aktif"
         ]);
       });
