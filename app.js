@@ -880,10 +880,9 @@ async function performWorkspaceBackup(){
   const activePdfDir=await getWorkspaceDirectory("active-pdfs",true);
   const analysisDir=await getWorkspaceDirectory("analysis",true);
   const batchPdfDir=await getWorkspaceDirectory("batch-pdfs",true);
-  const samplingPdfDir=await getWorkspaceDirectory("sampling-pdfs",true);
   const medicinePdfDir=await getWorkspaceDirectory("medicine-pdfs",true);
   const pendingMedicine=medicineFiles.filter(entry=>entry.pending||entry.error);
-  const totalPdfs=files.length+samplingFiles.length+pendingMedicine.length+batches.reduce((n,b)=>n+b.patientFiles.length,0);
+  const totalPdfs=files.length+pendingMedicine.length+batches.reduce((n,b)=>n+b.patientFiles.length,0);
   let copied=0;
   const activeExternalUpdates=[];
   let snapshotExternalStateChanged=false;
@@ -924,41 +923,11 @@ async function performWorkspaceBackup(){
     }
   }
 
-  const samplingToCopy=samplingFiles.filter(it=>!workspaceSyncedPdfIds.has(`sampling:${it.id}`)).length;
-  let samplingCopied=0;
-  if(samplingToCopy>0){
-    if(SamplingProgress.active() && SamplingProgress.has("backup")){
-      SamplingProgress.phase("backup",samplingToCopy);
-    }else if(!SamplingProgress.active()){
-      // cadangan latar belakang (mis. setelah folder dihubungkan kembali): tampilkan bar mandiri
-      samplingBackupOwnsBar=true;
-      SamplingProgress.start({total:samplingToCopy,steps:["backup"]});
-      SamplingProgress.phase("backup",samplingToCopy);
-    }
-  }
-  for(const item of samplingFiles){
-    const key=`sampling:${item.id}`;
-    const targetName=`${workspaceFileName(item.id)}.pdf`;
-    if(!workspaceSyncedPdfIds.has(key)){
-      setWorkspaceStatus(`Mencadangkan PDF ${copied+1} dari ${Math.max(totalPdfs,1)}…`);
-      const blob=await getSamplingBlobForBackup(item);
-      await writeWorkspaceFile(samplingPdfDir,targetName,blob);
-      workspaceSyncedPdfIds.add(key);
-      samplingCopied++;
-      if(samplingToCopy>0 && SamplingProgress.has("backup")) SamplingProgress.progress("backup",samplingCopied,null,samplingToCopy);
-    }
-    if(!item.externalStored) snapshotExternalStateChanged=true;
-    item.externalStored=true;
-    item.externalPdfFolder="sampling-pdfs";
-    item.externalFileName=targetName;
-    copied++;
-    if(copied%25===0) await yieldToBrowser();
-  }
-
-  if(samplingBackupOwnsBar){
-    samplingBackupOwnsBar=false;
-    SamplingProgress.finish({text:`${samplingCopied} PDF sampling dicadangkan`});
-  }
+  // PDF Sampling TIDAK lagi disalin ke folder cadangan. Sampling hanya memerlukan nama dan
+  // ukuran berkas; menyalin ribuan PDF (mis. 7.664 berkas = 10 GB) memakan waktu berjam-jam.
+  // Yang dicadangkan hanya DAFTAR-nya (di sipeka-session.json). Setelah browser ditutup,
+  // pengguna cukup memilih ulang folder asal dan berkas dipasangkan kembali lewat fingerprint.
+  // Item dari cadangan lama yang PDF-nya sudah terlanjur tersalin (externalStored) tetap dapat dipakai.
 
   for(const entry of pendingMedicine){
     if(deletedMedicineRecordIds.has(entry.id)||(!entry.pending&&!entry.error))continue;
@@ -1044,7 +1013,6 @@ async function saveWorkspaceBackup(forceNow){
     return result;
   }catch(err){
     console.warn("Cadangan folder gagal:",err);
-    if(samplingBackupOwnsBar){ samplingBackupOwnsBar=false; SamplingProgress.hide(); }
     setWorkspaceStatus(`Cadangan gagal: ${err.message||err}`,true);
     return false;
   }finally{
@@ -2278,7 +2246,7 @@ async function processSamplingFiles(all){
   SamplingProgress.start({
     total:pdfs.length,
     totalBytes:pdfs.reduce((s,f)=>s+(f.size||0),0),
-    steps: hasFolder ? ["prep","list","backup"] : ["prep","list"]
+    steps: ["prep","list"]
   });
   await yieldToBrowser();   // beri kesempatan browser menggambar bar sebelum loop panjang
   SamplingProgress.phase("list");
@@ -2313,14 +2281,9 @@ async function processSamplingFiles(all){
   renderSamplingList();
   scheduleSave(100);
 
-  // Cadangan PDF ke Folder Cadangan (jika terhubung): bar ikut menampilkan penyalinan.
-  let backupOk = true;
-  if(hasFolder && SamplingProgress.has("backup")){
-    const pendingCopy = samplingFiles.filter(it=>it.file && !workspaceSyncedPdfIds.has(`sampling:${it.id}`)).length;
-    SamplingProgress.phase("backup", pendingCopy);
-    try{ backupOk = await saveWorkspaceBackup(true); }
-    catch(err){ backupOk=false; console.warn("Cadangan sampling gagal:",err); }
-  }
+  const backupOk = true;
+  // Hanya daftar sampling yang ikut dicadangkan (file sesi); PDF-nya tidak disalin.
+  if(hasFolder) scheduleWorkspaceBackup(500);
   SamplingProgress.finish({
     text:`${addedCount} berkas ditambahkan`+(duplicateCount?`, ${duplicateCount} duplikat dilewati`:"")+(reattachedCount?`, ${reattachedCount} dipasangkan kembali`:"")+(skipped?`, ${skipped} non-PDF diabaikan`:""),
     warn: (!backupOk && hasFolder) ? "pencadangan ke folder belum selesai" : ""
@@ -2423,7 +2386,7 @@ function renderSamplingList(){
       <input type="checkbox" ${item.checked?"checked":""} ${(state||unavailable)?"disabled":""}>
       <div class="sr-name">${escapeAttr(item.name)}${item.relPath ? `<span class="sr-path">${escapeAttr(item.relPath)}</span>` : ""}</div>
       ${suspicious ? `<span class="sr-badge">Dicurigai</span>` : `<span class="sr-badge-spacer"></span>`}
-      ${state ? `<span class="sr-state">${state}</span>` : (unavailable?`<span class="sr-state">Hubungkan cadangan / pilih ulang folder</span>`:(item.externalStored&&!item.file?`<span class="sr-state">Tersedia di cadangan</span>`:""))}
+      ${state ? `<span class="sr-state">${state}</span>` : (unavailable?`<span class="sr-state" title="PDF tidak disalin ke folder cadangan. Pilih lagi folder asalnya di atas; berkas akan dipasangkan otomatis.">Pilih ulang folder asal</span>`:(item.externalStored&&!item.file?`<span class="sr-state">Tersedia di cadangan</span>`:""))}
       <span class="sr-size">${fmtKB(item.size)}</span>
     `;
     row.querySelector("input[type=checkbox]").addEventListener("change", e=>{
