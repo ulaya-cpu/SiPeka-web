@@ -193,6 +193,7 @@ function serializeAnalysis(entry){
   return {
     digitalText:entry.digitalText||"",
     ocrText:entry.ocrText||"",
+    ocrPageTexts:entry.ocrPageTexts||{},
     pageTexts:entry.pageTexts||[]
   };
 }
@@ -420,7 +421,7 @@ function dbClearApplicationData(){
 
 function serializeEntry(e, includeBlob, includeAnalysis){
   const row = {
-    id:e.id, name:e.name, category:e.category,
+    id:e.id, name:e.name, category:e.category, categoryManual:!!e.categoryManual, categoryAuto:!!e.categoryAuto,
     itemsStatus:e.itemsStatus||{}, open:!!e.open, pending:!!e.pending, error:e.error||null, errorKind:e.errorKind||null, sep:e.sep||"",
     fingerprint:e.fingerprint||"", order:Number.isFinite(e.order)?e.order:0,
     size:Number.isFinite(e.size)?e.size:0, lastModified:Number.isFinite(e.lastModified)?e.lastModified:0,
@@ -441,6 +442,7 @@ function serializeEntry(e, includeBlob, includeAnalysis){
   if(includeAnalysis){
     row.digitalText=e.digitalText||"";
     row.ocrText=e.ocrText||"";
+    row.ocrPageTexts=e.ocrPageTexts||{};
     row.pageTexts=e.pageTexts||[];
   }
   if(includeBlob) row.blob = e.blob || null;
@@ -582,6 +584,7 @@ function rebuildEntry(stored){
   entry.digitalText = stored.digitalText||"";
   entry.ocrText = stored.ocrText || ((stored.ocr&&stored.ocr.done&&stored.text)?stored.text:"");
   entry.pageTexts = (stored.pageTexts||[]).map(compactPageText);
+  entry.ocrPageTexts = (stored.ocrPageTexts && typeof stored.ocrPageTexts==="object") ? stored.ocrPageTexts : {};
   entry.ocrCandidates = Array.isArray(stored.ocrCandidates) ? stored.ocrCandidates :
     entry.pageTexts.map((text,idx)=>({text,idx})).filter(row=>row.text.trim().length<20).map(row=>row.idx);
   entry._analysisLoaded = hasEmbeddedAnalysis;
@@ -1389,9 +1392,9 @@ let categories = {
     label: "RS \u2014 Rawat Inap",
     items: [
       { id: "sep", name: "Surat Eligibilitas Peserta (SEP)", keywords: ["surat elegibilitas peserta","surat eligibilitas peserta"], conditional:false },
-      { id: "ringkasan", name: "Resume Medis / Ringkasan Pulang", keywords: ["ringkasan pulang","resume medis","resume medis pasien","resume pasien pulang"], conditional:false, contentCheck:{ minChars:250, minValueHits:1, spanPages:1 } },
+      { id: "ringkasan", name: "Resume Medis / Ringkasan Pulang", keywords: ["ringkasan pulang","resume medis","resume medis pasien","resume pasien pulang"], conditional:false, contentCheck:{ minChars:250, minValueHits:1, spanPages:1, requireIcd:true } },
       { id: "penunjang", name: "Hasil Penunjang (Lab/Radiologi)", keywords: ["hasil pemeriksaan laboratorium","hasil pemeriksaan radiologi","hasil laboratorium","hasil pemeriksaan penunjang","hasil usg","elektrokardiogram"], conditional:false, contentCheck:{ minChars:100, minValueHits:1, spanPages:2, valuePatterns:CONTENT_VALUE_PATTERNS_LAB } },
-      { id: "rincian", name: "Rincian Biaya / Tagihan", keywords: ["rincian biaya","total tagihan","rincian tagihan","rincian biaya pelayanan pasien","billing"], conditional:false },
+      { id: "rincian", name: "Rincian Biaya / Tagihan", keywords: ["rincian biaya","total tagihan","rincian tagihan","rincian biaya pelayanan pasien","billing","total biaya","biaya & perawatan"], conditional:false },
       { id: "inacbg", name: "Berkas Klaim Individual (INA-CBG)", keywords: ["berkas klaim individual","ina-cbg","ina cbg","hasil grouping","e-klaim"], conditional:false },
       { id: "sprin", name: "Surat Perintah Rawat Inap", keywords: ["surat perintah rawat inap"], conditional:false },
       { id: "consent", name: "Persetujuan Umum (General Consent)", keywords: ["general consent","persetujuan umum","pemberian informasi dan persetujuan"], conditional:false },
@@ -1402,10 +1405,10 @@ let categories = {
     label: "RS \u2014 Rawat Jalan",
     items: [
       { id: "sep", name: "Surat Eligibilitas Peserta (SEP)", keywords: ["surat elegibilitas peserta","surat eligibilitas peserta"], conditional:false },
-      { id: "resume_poli", name: "Resume / Ringkasan Pulang Rawat Jalan", keywords: ["resume poliklinik","catatan medis poliklinik","resume rawat jalan","ringkasan pulang"], conditional:false, contentCheck:{ minChars:250, minValueHits:1, spanPages:1 } },
+      { id: "resume_poli", name: "Resume / Ringkasan Pulang Rawat Jalan", keywords: ["resume poliklinik","catatan medis poliklinik","resume rawat jalan","ringkasan pulang","resume medis","resume medis pasien"], conditional:false, contentCheck:{ minChars:250, minValueHits:1, spanPages:1, requireIcd:true } },
       { id: "inacbg", name: "Berkas Klaim Individual (INA-CBG)", keywords: ["berkas klaim individual","ina-cbg","ina cbg"], conditional:false },
-      { id: "resep", name: "Resep Obat / Kwitansi Farmasi", keywords: ["resep gawat darurat","resep","kwitansi pelayanan obat"], conditional:true },
-      { id: "rincian", name: "Rincian Biaya / Tagihan", keywords: ["rincian biaya","total tagihan","rincian biaya pelayanan pasien"], conditional:false },
+      { id: "resep", name: "Resep Obat / Kwitansi Farmasi", keywords: ["resep gawat darurat","resep obat","pemberian obat","kwitansi pelayanan obat"], conditional:true },
+      { id: "rincian", name: "Rincian Biaya / Tagihan", keywords: ["rincian biaya","total tagihan","rincian biaya pelayanan pasien","rincian tagihan","total biaya","biaya & perawatan"], conditional:false },
       { id: "penunjang", name: "Hasil Penunjang (Lab/Radiologi)", keywords: ["hasil pemeriksaan laboratorium","hasil pemeriksaan radiologi"], conditional:true, contentCheck:{ minChars:100, minValueHits:1, spanPages:2, valuePatterns:CONTENT_VALUE_PATTERNS_LAB } },
       { id: "rujukan", name: "Surat Rujukan", keywords: ["surat rujukan"], conditional:true }
     ]
@@ -1453,25 +1456,46 @@ const BUILTIN_KEYWORD_ALIASES = {
     sep:["surat elegibilitas peserta","surat eligibilitas peserta"],
     ringkasan:["ringkasan pulang","resume medis","resume medis pasien","resume pasien pulang"],
     penunjang:["hasil pemeriksaan laboratorium","hasil pemeriksaan radiologi","hasil laboratorium","hasil pemeriksaan penunjang","hasil usg","elektrokardiogram"],
-    rincian:["rincian biaya","total tagihan","rincian tagihan","rincian biaya pelayanan pasien","billing"],
+    rincian:["rincian biaya","total tagihan","rincian tagihan","rincian biaya pelayanan pasien","billing","total biaya","biaya & perawatan"],
     inacbg:["berkas klaim individual","ina-cbg","ina cbg","hasil grouping","e-klaim"],
     sprin:["surat perintah rawat inap"],
     consent:["general consent","persetujuan umum","pemberian informasi dan persetujuan"],
     operasi:["laporan operasi","laporan tindakan operasi","keterangan tindakan operasi"]
+  },
+  // Rawat jalan: berkas RS umumnya memakai judul "Resume Medis Pasien" dan lembar
+  // "Riwayat Perawatan" (berisi "Biaya & Perawatan" / "Total Biaya"), bukan "Rincian Biaya".
+  rs_jalan:{
+    resume_poli:["resume poliklinik","catatan medis poliklinik","resume rawat jalan","ringkasan pulang","resume medis","resume medis pasien"],
+    resep:["resep gawat darurat","resep obat","pemberian obat","kwitansi pelayanan obat"],
+    rincian:["rincian biaya","total tagihan","rincian biaya pelayanan pasien","rincian tagihan","total biaya","biaya & perawatan"]
   }
 };
+// Kata kunci bawaan lama yang terbukti terlalu umum. Dihapus SATU KALI dari sesi lama
+// (ditandai cat.kwRev) supaya kata kunci yang sengaja ditambahkan lagi oleh pengguna tidak ikut hilang.
+// "resep" saja cocok dengan label "Resep :" pada catatan SOAP, walau tidak ada lembar resep.
+const BUILTIN_KEYWORD_REMOVALS = {
+  rs_jalan:{ resep:["resep"] }
+};
+const BUILTIN_KEYWORD_REV = 2;
 function applyBuiltInKeywordAliases(){
   Object.entries(BUILTIN_KEYWORD_ALIASES).forEach(([catKey,items])=>{
     const cat=categories[catKey];
     if(!cat||!Array.isArray(cat.items)) return;
+    const removals=((cat.kwRev||0)<BUILTIN_KEYWORD_REV && BUILTIN_KEYWORD_REMOVALS[catKey]) || {};
     Object.entries(items).forEach(([itemId,aliases])=>{
       const item=cat.items.find(row=>row.id===itemId);
       if(!item) return;
       if(itemId==="sep"&&/Surat Elegibilitas Peserta/i.test(item.name||"")) item.name="Surat Eligibilitas Peserta (SEP)";
-      const existingKeywords=(item.keywords||[]).filter(value=>!(itemId==="sep"&&["no.sep","nomor sep","no sep"].includes(String(value).trim().toLowerCase())));
+      const drop=removals[itemId]||[];
+      const existingKeywords=(item.keywords||[]).filter(value=>{
+        const v=String(value).trim().toLowerCase();
+        if(itemId==="sep"&&["no.sep","nomor sep","no sep"].includes(v)) return false;
+        return !drop.includes(v);
+      });
       const merged=new Set([...existingKeywords,...aliases].map(value=>String(value).trim().toLowerCase()).filter(Boolean));
       item.keywords=Array.from(merged);
     });
+    cat.kwRev=BUILTIN_KEYWORD_REV;
   });
 }
 
@@ -1483,12 +1507,12 @@ function applyBuiltInKeywordAliases(){
 // disesuaikan pengguna sendiri (item.contentCheck yang sudah ada tidak akan ditimpa).
 const BUILTIN_CONTENT_CHECKS = {
   rs_inap:{
-    ringkasan:{ minChars:250, minValueHits:1, spanPages:1 },
+    ringkasan:{ minChars:250, minValueHits:1, spanPages:1, requireIcd:true },
     penunjang:{ minChars:100, minValueHits:1, spanPages:2, valuePatterns:CONTENT_VALUE_PATTERNS_LAB },
     operasi:{ minChars:300, minValueHits:1, spanPages:1, valuePatterns:CONTENT_VALUE_PATTERNS_OPERASI }
   },
   rs_jalan:{
-    resume_poli:{ minChars:250, minValueHits:1, spanPages:1 },
+    resume_poli:{ minChars:250, minValueHits:1, spanPages:1, requireIcd:true },
     penunjang:{ minChars:100, minValueHits:1, spanPages:2, valuePatterns:CONTENT_VALUE_PATTERNS_LAB }
   },
   puskesmas:{
@@ -1501,8 +1525,13 @@ function applyBuiltInContentChecks(){
     if(!cat||!Array.isArray(cat.items)) return;
     Object.entries(items).forEach(([itemId,cfg])=>{
       const item=cat.items.find(row=>row.id===itemId);
-      if(!item||item.contentCheck) return; // jangan timpa jika sudah ada (mis. sudah disesuaikan pengguna)
-      item.contentCheck=cfg;
+      if(!item) return;
+      if(item.contentCheck){
+        // Sudah ada (mis. dari sesi lama): jangan timpa, hanya lengkapi opsi baru yang belum pernah diatur.
+        if(cfg.requireIcd!=null && item.contentCheck.requireIcd==null) item.contentCheck.requireIcd=cfg.requireIcd;
+        return;
+      }
+      item.contentCheck=Object.assign({},cfg);
     });
   });
 }
@@ -1626,7 +1655,7 @@ function renderEditor(){
     row.innerHTML = `
       <input type="text" value="${escapeAttr(item.name)}" data-idx="${idx}" class="name-input">
       <textarea data-idx="${idx}" class="kw-input" placeholder="kata kunci, dipisah koma">${escapeAttr(item.keywords.join(", "))}</textarea>
-      <label class="cond-check"><input type="checkbox" data-idx="${idx}" class="cond-input" ${item.conditional?"checked":""}> Kondisional (mis. hanya wajib jika ada tindakan tertentu &mdash; beri opsi "tidak berlaku")</label>
+      <label class="cond-check"><input type="checkbox" data-idx="${idx}" class="cond-input" ${item.conditional?"checked":""}> Kondisional (mis. hanya wajib jika ada tindakan tertentu &mdash; bila tidak ditemukan, berkas tetap Lengkap dengan catatan; bisa ditandai "tidak berlaku")</label>
       <div class="row-foot"><button class="mini-btn" data-idx="${idx}">Hapus</button></div>
     `;
     row.querySelector(".name-input").addEventListener("input", e=>{
@@ -1841,6 +1870,7 @@ async function analyzeEntryPdf(entry){
   entry.pageTexts = [];
   entry.digitalText = "";
   entry.ocrText = "";
+  entry.ocrPageTexts = {};
   entry.ocrCandidates = [];
   entry._analysisLoaded = true;
   entry.analysisStored = false;
@@ -1855,7 +1885,8 @@ async function analyzeEntryPdf(entry){
       const page = await withTimeout(entry.pdfDoc.getPage(p),45000,`Halaman ${p} tidak merespons.`);
       const content = await withTimeout(page.getTextContent(),45000,`Teks halaman ${p} tidak merespons.`);
       try{ page.cleanup(); }catch(e){}
-      const t = content.items.map(it=>it.str).join(" ");
+      // Satu halaman = satu baris di digitalText (dipakai pengecekan isi per halaman).
+      const t = content.items.map(it=>it.str).join(" ").replace(/[\r\n]+/g," ");
       if(t.trim().length<20) entry.ocrCandidates.push(p-1);
       entry.pageTexts.push(compactPageText(t));
       full += t + "\n";
@@ -1869,6 +1900,7 @@ async function analyzeEntryPdf(entry){
     if(err&&err.code==="TIMEOUT") retireSharedPdfWorker();
   }
   entry.pending = false;
+  applyDetectedCategory(entry);
   evaluateFile(entry);
   if(!entry.error&&entry.ocrCandidates.length) enqueueAutoOcr(entry);
   dirtyActiveIds.add(entry.id);
@@ -1883,6 +1915,7 @@ async function retryActiveEntryAnalysis(entry){
   entry.pending=true;
   entry.error=null;
   entry.ocrText="";
+  entry.ocrPageTexts={};
   entry.ocr={running:false,done:false,error:null,progress:"",processedPages:[],automatic:false};
   markEntryDirty(entry);
   renderResults();
@@ -1901,6 +1934,7 @@ function releaseEntryHeavyData(entry){
   if((entry.analysisStored||entry.externalAnalysisStored) && entry._analysisLoaded && !entry.open && !(entry.ocr&&entry.ocr.running)){
     entry.digitalText="";
     entry.ocrText="";
+    entry.ocrPageTexts={};
     entry.pageTexts=[];
     entry._analysisLoaded=false;
   }
@@ -2804,6 +2838,8 @@ async function runOcr(entry, renderFn, evalFn, options){
       if(generation!==autoOcrGeneration) break;
       const readText=(result.data.text||"").toLowerCase();
       entry.ocrText += "\n" + readText;
+      entry.ocrPageTexts = entry.ocrPageTexts || {};
+      entry.ocrPageTexts[pageIndex] = readText.replace(/[\r\n]+/g," ");
       entry.pageTexts[pageIndex] = compactPageText(readText);
       processed.add(pageIndex);
       entry.ocr.processedPages=Array.from(processed).sort((a,b)=>a-b);
@@ -2847,6 +2883,7 @@ async function ensureAnalysisData(entry){
   }
   entry.digitalText=(row&&row.digitalText)||"";
   entry.ocrText=(row&&row.ocrText)||"";
+  entry.ocrPageTexts=(row&&row.ocrPageTexts&&typeof row.ocrPageTexts==="object")?row.ocrPageTexts:{};
   entry.pageTexts=((row&&row.pageTexts)||[]).map(compactPageText);
   entry._analysisLoaded=true;
   return entry;
@@ -3036,6 +3073,23 @@ async function mountPdfViewer(paneEl, entry){
 function evaluateFile(entry){
   evaluateAgainstCat(entry, categories[entry.category]);
 }
+// Jenis perawatan tercetak jelas di Berkas Klaim Individual (e-klaim), mis.
+// "Jenis Perawatan : 2 - Rawat Jalan". Lebih dapat dipercaya daripada nama file.
+function detectCareTypeCategory(text){
+  const match=/jenis\s+perawatan\s*:?\s*(?:\d\s*-\s*)?rawat\s+(jalan|inap)/.exec(String(text||"").toLowerCase());
+  return match ? (match[1]==="inap" ? "rs_inap" : "rs_jalan") : "";
+}
+// Koreksi otomatis hanya antara Rawat Inap <-> Rawat Jalan, dan tidak pernah menimpa
+// kategori yang sudah dipilih sendiri oleh pengguna pada berkas tersebut.
+function applyDetectedCategory(entry){
+  if(!entry || entry.error || entry.categoryManual) return false;
+  if(entry.category!=="rs_inap" && entry.category!=="rs_jalan") return false;
+  const detected=detectCareTypeCategory(entry.digitalText);
+  if(!detected || detected===entry.category || !categories[detected]) return false;
+  entry.category=detected;
+  entry.categoryAuto=true;
+  return true;
+}
 function normalizeDetectionText(value){
   return String(value||"").toLowerCase().normalize("NFKD")
     .replace(/[\u0300-\u036f]/g,"")
@@ -3052,15 +3106,43 @@ function detectionTextIncludes(normalizedText,keyword){
 // Tidak mengubah status.source/manual/na sama sekali -> logika ceklis lama tidak berubah;
 // hasilnya cuma dipakai untuk menampilkan lencana peringatan tambahan di UI.
 // (CONTENT_VALUE_PATTERNS & variannya didefinisikan lebih awal, sebelum `categories`.)
+// Label formulir yang kebetulan memuat kata kunci dokumen lain. Contoh: baris
+// "Hasil laboratorium yang positif :" pada Resume Medis BUKAN lembar hasil laboratorium.
+// Frasa ini dibuang dari teks (yang sudah dinormalisasi) sebelum kata kunci dicocokkan.
+const DETECTION_LABEL_PHRASES = [
+  "hasil laboratorium yang positif",
+  "pemeriksaan penunjang yang positif"
+].map(normalizeDetectionText);
+function stripFormLabels(normalizedText){
+  let text=` ${normalizedText} `;
+  DETECTION_LABEL_PHRASES.forEach(phrase=>{ if(phrase) text=text.split(` ${phrase} `).join(" "); });
+  return text.trim();
+}
+const ICD10_CODE_PATTERN = /\b[a-z]\d{2}\b/; // kode dasar ICD-10 pada teks ternormalisasi, mis. "k76" dari "K76.0"
+
+// Teks lengkap per halaman untuk pengecekan isi. `entry.pageTexts` sengaja hanya menyimpan
+// penanda ringkas ("#") agar hemat memori, jadi teks halaman diturunkan dari digitalText
+// (tiap halaman diakhiri "\n" saat analisis) ditambah hasil OCR per halaman bila ada.
+// Mengembalikan null bila pemetaan halaman tidak dapat dipastikan -> tidak menilai.
+function entryPageTextsForCheck(entry){
+  const pageCount = Array.isArray(entry.pageTexts) ? entry.pageTexts.length : 0;
+  if(!pageCount) return null;
+  const segments = String(entry.digitalText||"").split("\n");
+  if(segments.length && segments[segments.length-1]==="") segments.pop();
+  if(segments.length!==pageCount) return null;
+  const ocrPages = entry.ocrPageTexts || {};
+  return segments.map((text,idx)=> ocrPages[idx] ? `${text} ${ocrPages[idx]}` : text);
+}
+// Hasil: false (tidak ada peringatan), "minim" (isi sangat sedikit), atau "icd" (kode diagnosis tidak ditemukan).
 function evaluateContentWarning(entry, item){
   try{
     if(!item || !item.contentCheck) return false;
-    const pages = Array.isArray(entry.pageTexts) ? entry.pageTexts : [];
-    if(!pages.length) return false; // teks per halaman belum tersedia (mis. OCR belum jalan) -> jangan menebak
+    const pages = entryPageTextsForCheck(entry);
+    if(!pages) return false; // teks per halaman belum tersedia -> jangan menebak
     const cfg = item.contentCheck;
     const hitPages = [];
     pages.forEach((pageText,idx)=>{
-      const norm = normalizeDetectionText(pageText||"");
+      const norm = stripFormLabels(normalizeDetectionText(pageText||""));
       if(item.keywords.some(kw=>detectionTextIncludes(norm,kw))) hitPages.push(idx);
     });
     if(!hitPages.length) return false; // judul tidak bisa dilokalisasi ke halaman tertentu -> tidak menilai
@@ -3070,23 +3152,38 @@ function evaluateContentWarning(entry, item){
     const windowText = Array.from(windowIdx).sort((a,b)=>a-b).map(i=>pages[i]||"").join(" ");
     const normalizedWindow = normalizeDetectionText(windowText);
     const longEnough = normalizedWindow.length >= (cfg.minChars||0);
-    const patterns = cfg.valuePatterns || CONTENT_VALUE_PATTERNS;
+    const patterns = (Array.isArray(cfg.valuePatterns) && cfg.valuePatterns.every(re=>re instanceof RegExp)) ? cfg.valuePatterns : CONTENT_VALUE_PATTERNS;
     const valueHits = patterns.reduce((count,re)=>count+(re.test(normalizedWindow)?1:0),0);
     const enoughValues = valueHits >= (cfg.minValueHits!=null?cfg.minValueHits:1);
     // Hanya diberi peringatan bila KEDUA sinyal lemah, supaya berkas yang sah tidak salah ditandai.
-    return !(longEnough || enoughValues);
+    if(!(longEnough || enoughValues)) return "minim";
+    // Formulir resume punya banyak label tercetak, sehingga panjang teks saja tidak membuktikan
+    // lembar itu terisi. Untuk item bertanda requireIcd, halaman tempat judul ditemukan harus
+    // memuat setidaknya satu kode ICD-10. Hanya halaman judul yang dinilai (bukan halaman
+    // berikutnya) karena kode tindakan/tarif di lembar lain berbentuk mirip kode ICD.
+    if(cfg.requireIcd){
+      const titlePages = normalizeDetectionText(hitPages.map(i=>pages[i]||"").join(" "));
+      if(!ICD10_CODE_PATTERN.test(titlePages)) return "icd";
+    }
+    return false;
   }catch(err){
     console.warn("Pengecekan isi tambahan gagal, dilewati (tidak memengaruhi hasil utama):",err);
     return false;
   }
+}
+function contentWarnBadgeHtml(kind){
+  if(kind==="icd"){
+    return ` <span class="content-warn-badge" title="Dokumen terdeteksi, tetapi kode diagnosis (ICD-10) tidak ditemukan di halaman tersebut. Periksa manual apakah diagnosis dan kodenya benar-benar terisi.">&#9888; Cek kode ICD</span>`;
+  }
+  return ` <span class="content-warn-badge" title="Judul dokumen terdeteksi, tetapi isinya tampak sangat sedikit/minim data. Periksa manual apakah lembar ini benar-benar terisi.">&#9888; Cek isi</span>`;
 }
 function evaluateAgainstCat(entry, cat){
   const status = {};
   const digitalText = entry.digitalText || "";
   const fullText = digitalText + " " + (entry.ocrText||"");
   if(!entry.sep) entry.sep = extractSepNumber(fullText) || extractSepNumber(entry.name);
-  const normalizedDigitalText=normalizeDetectionText(digitalText);
-  const normalizedFullText=normalizeDetectionText(fullText);
+  const normalizedDigitalText=stripFormLabels(normalizeDetectionText(digitalText));
+  const normalizedFullText=stripFormLabels(normalizeDetectionText(fullText));
   cat.items.forEach(item=>{
     const prev = entry.itemsStatus[item.id];
     const digitalHit = item.keywords.some(kw=>detectionTextIncludes(normalizedDigitalText,kw));
@@ -3130,12 +3227,31 @@ function reprocessAllFilesOfCategory(catKey){
 /* ---------------- Results rendering ---------------- */
 function fileMissingItems(entry, catOverride){
   const cat = catOverride || categories[entry.category];
+  // Hanya dokumen WAJIB yang menentukan status "Kurang". Dokumen kondisional yang tidak
+  // ditemukan tidak menggagalkan berkas; ia dilaporkan sebagai catatan (lihat fileConditionalNotes).
   return cat.items.filter(item=>{
+    if(item.conditional) return false;
     const s = entry.itemsStatus[item.id];
     if(!s) return true;
-    if(item.conditional && s.na) return false;
     return !(s.source==="digital" || s.manual);
   });
+}
+// Dokumen kondisional yang tidak ditemukan dan belum ditandai "Tidak berlaku (N/A)".
+// Berkas tetap "Lengkap", tetapi daftar ini ditampilkan sebagai catatan untuk dicek verifikator.
+function fileConditionalNotes(entry, catOverride){
+  const cat = catOverride || categories[entry.category];
+  return cat.items.filter(item=>{
+    if(!item.conditional) return false;
+    const s = entry.itemsStatus[item.id];
+    if(!s) return true;
+    if(s.na) return false;
+    return !(s.source==="digital" || s.manual);
+  });
+}
+function completeBadgeHtml(noteNames){
+  const notes = noteNames||[];
+  if(!notes.length) return `<span class="badge complete">Lengkap</span>`;
+  return `<span class="badge complete" title="${escapeAttr("Dokumen kondisional tidak ditemukan: "+notes.join("; ")+". Tandai Tidak berlaku (N/A) bila memang tidak diperlukan.")}">Lengkap &bull; ${notes.length} catatan</span>`;
 }
 
 /* ---------------- Arsipkan berkas yang sudah diperiksa (lepas dari memori, ringkasan tetap ada) ---------------- */
@@ -3150,6 +3266,7 @@ function archivedSummaryFromEntry(entry){
     categoryLabel: cat ? cat.label : entry.category,
     isComplete: missing.length===0,
     missingNames: missing.map(item=>item.name),
+    noteNames: cat ? fileConditionalNotes(entry, cat).map(item=>item.name) : [],
     error: entry.error||null,
     fingerprint: entry.fingerprint||"",
     order:Number.isFinite(entry.order)?entry.order:0,
@@ -3215,7 +3332,7 @@ function renderArchivedPanel(){
     line.innerHTML = `
       <span class="archived-row-name">${escapeAttr(row.name)}</span>
       <span class="archived-row-cat">${escapeAttr(catLabel)}</span>
-      ${row.error ? `<span class="badge incomplete">Gagal dibaca</span>` : (row.isComplete ? `<span class="badge complete">Lengkap</span>` : `<span class="badge incomplete">Kurang ${(row.missingNames||[]).length}</span>`)}
+      ${row.error ? `<span class="badge incomplete">Gagal dibaca</span>` : (row.isComplete ? completeBadgeHtml(row.noteNames) : `<span class="badge incomplete">Kurang ${(row.missingNames||[]).length}</span>`)}
     `;
     body.appendChild(line);
   });
@@ -3416,7 +3533,7 @@ function renderResults(){
     let badgeHtml;
     if(entry.pending) badgeHtml = `<span class="badge loading">Memproses...</span>`;
     else if(entry.error) badgeHtml = `<span class="badge incomplete" title="${escapeAttr(entry.error)}">Gagal membaca PDF</span>`;
-    else badgeHtml = isComplete ? `<span class="badge complete">Lengkap</span>` : `<span class="badge incomplete">Kurang ${missing.length} dokumen</span>`;
+    else badgeHtml = isComplete ? completeBadgeHtml(fileConditionalNotes(entry).map(item=>item.name)) : `<span class="badge incomplete">Kurang ${missing.length} dokumen</span>`;
 
     const retryBtnHtml = entry.error ? `<button class="mini-action-btn retry-file-btn" type="button" ${retryAllState?"disabled":""} title="Muat PDF yang sama dan ulangi proses pembacaan.">Coba baca ulang</button>` : "";
     const archiveBtnHtml = (!entry.pending) ? `<button class="finish-btn archive-file-btn" type="button" ${ocrBusy?"disabled":""} title="Simpan hasil pemeriksaan lalu lepaskan PDF dari antrean aktif. Data tetap ikut ke CSV dan Sampling tidak berubah.">${ocrBusy?"Menunggu OCR…":"Selesai &amp; hapus PDF"}</button>` : "";
@@ -3444,7 +3561,7 @@ function renderResults(){
     card.innerHTML = `
       <div class="file-head">
         <span class="file-name">${escapeAttr(entry.name)}</span>
-        <select class="cat-select">${catOptions}</select>
+        <select class="cat-select"${entry.categoryAuto?' title="Kategori disesuaikan otomatis dari Jenis Perawatan pada Berkas Klaim Individual. Ubah di sini bila keliru."':''}>${catOptions}</select>${entry.categoryAuto?'<span class="cond-tag" title="Kategori disesuaikan otomatis dari Jenis Perawatan pada Berkas Klaim Individual.">Kategori otomatis</span>':''}
         ${badgeHtml}
         ${retryBtnHtml}
         ${archiveBtnHtml}
@@ -3470,6 +3587,8 @@ function renderResults(){
       const select=e.target;
       select.disabled=true;
       entry.category = e.target.value;
+      entry.categoryManual = true;   // pilihan pengguna tidak akan ditimpa deteksi otomatis
+      entry.categoryAuto = false;
       try{
         await ensureAnalysisData(entry);
         evaluateFile(entry);
@@ -3534,8 +3653,7 @@ function renderResults(){
           <label class="na-toggle">
             <input type="checkbox" class="na-check" ${s.na?"checked":""}> Tidak berlaku (N/A)
           </label>` : "";
-        const contentWarnHtml = (!naOn && s.contentWarning) ? `
-          <span class="content-warn-badge" title="Judul dokumen terdeteksi, tetapi isinya tampak sangat sedikit/minim data. Periksa manual apakah lembar ini benar-benar terisi.">&#9888; Cek isi</span>` : "";
+        const contentWarnHtml = (!naOn && s.contentWarning) ? contentWarnBadgeHtml(s.contentWarning) : "";
 
         row.innerHTML = `
           <div class="item-name">${escapeAttr(item.name)}${item.conditional?'<span class="cond-tag">Kondisional</span>':''}
@@ -3633,7 +3751,7 @@ function itemStatusLabel(item, s){
   if(item.conditional && s.na) return "Tidak berlaku (N/A)";
   if(s.source==="digital") return "Lengkap";
   if(s.manual) return "Lengkap";
-  return "KURANG";
+  return item.conditional ? "Tidak ditemukan (kondisional)" : "KURANG";
 }
 function itemSourceLabel(item, s){
   if(item.conditional && s.na) return "-";
@@ -3738,11 +3856,21 @@ function verificationReportRows(){
     const missing=row.missingNames||[];
     let keterangan, rincian;
     if(row.error){ keterangan="Gagal Baca"; rincian=row.error; }
-    else if(row.isComplete){ keterangan="Lengkap"; rincian="-"; }
-    else{ keterangan="Kurang"; rincian=missing.map((name,i)=>`${i+1}. ${name}`).join("\n"); }
+    const notes=row.noteNames||[];
+    const noteLines=notes.length?["Catatan - dokumen kondisional tidak ditemukan:",...notes.map((name,i)=>`${i+1}. ${name}`)]:[];
+    let lineCount=1;
+    if(row.error){ keterangan="Gagal Baca"; rincian=row.error; }
+    else if(row.isComplete){
+      keterangan="Lengkap"; // kolom Keterangan tetap 3 nilai baku; catatan ditulis di kolom Rincian
+      rincian=notes.length?noteLines.join("\n"):"-";
+      lineCount=Math.max(1,noteLines.length);
+    }else{
+      const parts=missing.map((name,i)=>`${i+1}. ${name}`).concat(noteLines);
+      keterangan="Kurang"; rincian=parts.join("\n"); lineCount=Math.max(1,parts.length);
+    }
     return {
       no:idx+1, sep:row.sep||extractSepNumber(row.name)||"", keterangan, rincian,
-      lines:Math.max(1,keterangan==="Kurang"?missing.length:1),
+      lines:lineCount,
       kategori:row.categoryLabel||(categories[row.category]||{}).label||row.category||"",
       name:row.name||""
     };
@@ -3770,7 +3898,7 @@ async function buildVerificationWorkbook(rows,ZipEngine){
     `<row r="1" ht="24" customHeight="1">${cell("A1","Hasil Verifikasi Kelengkapan Berkas Klaim",1)}</row>`,
     `<row r="2">${cell("A2",`SIPEKA Klaim • BPJS Kesehatan • Diunduh ${stamp} • ${rows.length} berkas: ${counts.Lengkap} lengkap, ${counts.Kurang} kurang, ${counts["Gagal Baca"]} gagal baca`,2)}</row>`,
     `<row r="3" ht="6" customHeight="1"/>`,
-    `<row r="4" ht="22" customHeight="1">${["No","SEP","Keterangan","Rincian Berkas Kurang","Nama File"].map((h,i)=>cell(String.fromCharCode(65+i)+"4",h,3)).join("")}</row>`];
+    `<row r="4" ht="22" customHeight="1">${["No","SEP","Keterangan","Rincian Berkas Kurang / Catatan","Nama File"].map((h,i)=>cell(String.fromCharCode(65+i)+"4",h,3)).join("")}</row>`];
   for(let i=0;i<rows.length;i++){
     const r=rows[i], n=i+5;
     const wrapLines=Math.max(r.lines, Math.ceil(String(r.rincian).length/70), Math.ceil(r.name.length/45));
@@ -3899,7 +4027,8 @@ document.getElementById("exportBtn").onclick = async ()=>{
     resultRows.forEach((row,idx)=>{
       const catLabel = row.categoryLabel || (categories[catKey]||{}).label || catKey;
       const missing = row.missingNames||[];
-      const fileStatus = row.error ? `Gagal dibaca: ${row.error}` : (row.isComplete ? "Lengkap" : `Belum Lengkap (kurang ${missing.length})`);
+      const notes = row.noteNames||[];
+      const fileStatus = row.error ? `Gagal dibaca: ${row.error}` : (row.isComplete ? (notes.length?"Lengkap (dengan catatan)":"Lengkap") : `Belum Lengkap (kurang ${missing.length})`);
       const completedAt = row.completedAt ? new Date(row.completedAt).toLocaleString("id-ID") : "-";
       const noUrut = row.order||idx+1;
       // Baris ringkasan: satu baris per berkas, tetap memuat gabungan singkat semua dokumen yang kurang
@@ -3914,6 +4043,15 @@ document.getElementById("exportBtn").onclick = async ()=>{
         rows.push([
           noUrut, row.id, row.name, catLabel, fileStatus, missing.length,
           `Dokumen Kurang ${mIdx+1} dari ${missing.length}`,
+          docName,
+          completedAt, row.stored?"Hasil tersimpan":"Antrean aktif"
+        ]);
+      });
+      // Catatan: dokumen kondisional yang tidak ditemukan (tidak mengubah status berkas)
+      notes.forEach((docName,nIdx)=>{
+        rows.push([
+          noUrut, row.id, row.name, catLabel, fileStatus, missing.length,
+          `Catatan Kondisional ${nIdx+1} dari ${notes.length}`,
           docName,
           completedAt, row.stored?"Hasil tersimpan":"Antrean aktif"
         ]);
@@ -4214,7 +4352,7 @@ async function analyzeBatchPatientEntry(batch,entry,isAutoRetry){
       const page=await withTimeout(entry.pdfDoc.getPage(p),45000,`Halaman ${p} tidak merespons.`);
       const content=await withTimeout(page.getTextContent(),45000,`Teks halaman ${p} tidak merespons.`);
       try{ page.cleanup(); }catch(e){}
-      const t=content.items.map(it=>it.str).join(" ");
+      const t=content.items.map(it=>it.str).join(" ").replace(/[\r\n]+/g," ");
       if(t.trim().length<20) entry.ocrCandidates.push(p-1);
       entry.pageTexts.push(compactPageText(t));
       full+=t+"\n";
@@ -4250,6 +4388,7 @@ async function retryBatchPatientAnalysis(batch,entry){
   entry.pending=true;
   entry.error=null;
   entry.ocrText="";
+  entry.ocrPageTexts={};
   entry.ocr={running:false,done:false,error:null,progress:"",processedPages:[],automatic:false};
   renderBatches();
   await analyzeBatchPatientEntry(batch,entry);
@@ -4371,7 +4510,7 @@ function renderBatches(){
             const failed=batch.patientFiles.filter(pf=>pf.error&&!pf.pending);
             for(let i=0;i<failed.length;i++){
               const pf=failed[i];
-              pf.pending=true; pf.ocrText="";
+              pf.pending=true; pf.ocrText=""; pf.ocrPageTexts={};
               pf.ocr={running:false,done:false,error:null,progress:"",processedPages:[],automatic:false};
               document.getElementById("progressLine").textContent=`Memuat ulang berkas kolektif ${i+1} dari ${failed.length}...`;
               await analyzeBatchPatientEntry(batch,pf);
@@ -4457,7 +4596,7 @@ function renderBatches(){
       else if(pf.error) statusBadge = `<span class="badge incomplete" title="${escapeAttr(pf.error)}">Gagal membaca PDF</span><button class="mini-action-btn batch-retry-file" type="button">Coba baca ulang</button>`;
       else{
         const missing = fileMissingItems(pf, cat);
-        statusBadge = missing.length===0 ? `<span class="badge complete">Lengkap</span>` : `<span class="badge incomplete">Kurang ${missing.length} dokumen</span>`;
+        statusBadge = missing.length===0 ? completeBadgeHtml(fileConditionalNotes(pf, cat).map(item=>item.name)) : `<span class="badge incomplete">Kurang ${missing.length} dokumen</span>`;
       }
 
       rrow.innerHTML = `
@@ -4595,8 +4734,7 @@ function buildFileDetailNode(entry, cat, onChange){
         <label class="na-toggle">
           <input type="checkbox" class="na-check" ${s.na?"checked":""}> Tidak berlaku (N/A)
         </label>` : "";
-      const contentWarnHtml = (!naOn && s.contentWarning) ? `
-        <span class="content-warn-badge" title="Judul dokumen terdeteksi, tetapi isinya tampak sangat sedikit/minim data. Periksa manual apakah lembar ini benar-benar terisi.">&#9888; Cek isi</span>` : "";
+      const contentWarnHtml = (!naOn && s.contentWarning) ? contentWarnBadgeHtml(s.contentWarning) : "";
 
       row.innerHTML = `
         <div class="item-name">${escapeAttr(item.name)}${item.conditional?'<span class="cond-tag">Kondisional</span>':''}
