@@ -425,7 +425,7 @@ function serializeEntry(e, includeBlob, includeAnalysis){
     itemsStatus:e.itemsStatus||{}, open:!!e.open, pending:!!e.pending, error:e.error||null, errorKind:e.errorKind||null, sep:e.sep||"",
     fingerprint:e.fingerprint||"", order:Number.isFinite(e.order)?e.order:0,
     size:Number.isFinite(e.size)?e.size:0, lastModified:Number.isFinite(e.lastModified)?e.lastModified:0,
-    blobStored:!!e.blobStored, analysisStored:!!e.analysisStored,
+    blobStored:!!e.blobStored, analysisStored:!!e.analysisStored, sourceOnly:!!e.sourceOnly,
     externalStored:!!e.externalStored, externalAnalysisStored:!!e.externalAnalysisStored,
     externalPdfFolder:e.externalPdfFolder||"active-pdfs", externalFileName:e.externalFileName||`${e.id}.pdf`,
     ocrCandidates:Array.isArray(e.ocrCandidates)?e.ocrCandidates:[],
@@ -603,6 +603,10 @@ function rebuildEntry(stored){
     entry.objectUrl = "";
   }else if(entry.externalStored){
     entry.objectUrl="";
+  }else if(entry.sourceOnly){
+    // Hasil tetap utuh; PDF asal perlu dipilih ulang untuk pratinjau/OCR/baca ulang.
+    entry.objectUrl="";
+    entry.sourceMissing=true;
   }else{
     entry.objectUrl = "";
     entry.error = entry.error || "Berkas asli tidak tersimpan.";
@@ -795,6 +799,9 @@ async function readWorkspaceBlob(folderName,fileName){
   return await handle.getFile();
 }
 
+// Berkas "baca langsung" (entry.sourceOnly) tidak punya salinan PDF. Referensi File hanya hidup
+// selama sesi browser; setelah browser dibuka ulang PDF harus dipilih ulang agar terpasang kembali.
+const SOURCE_MISSING_MESSAGE="PDF asal tidak tersedia di sesi ini. Pilih/unggah ulang berkas yang sama agar terpasang kembali (hasil pemeriksaan tetap tersimpan).";
 async function getEntryBlobForBackup(entry){
   if(entry.blob) return entry.blob;
   if(entry.blobStored){
@@ -804,6 +811,7 @@ async function getEntryBlobForBackup(entry){
   if(entry.externalStored && workspaceDirHandle){
     return await readWorkspaceBlob(entry.externalPdfFolder||"active-pdfs",entry.externalFileName||`${workspaceFileName(entry.id)}.pdf`);
   }
+  if(entry.sourceOnly) throw new Error(SOURCE_MISSING_MESSAGE);
   throw new Error(`PDF ${entry.name||entry.id} tidak tersedia untuk dicadangkan.`);
 }
 
@@ -831,7 +839,7 @@ function workspaceManifest(){
     const row=serializeEntry(entry,false,false);
     row.blobStored=false;
     row.analysisStored=false;
-    row.externalStored=true;
+    row.externalStored=!entry.sourceOnly;
     row.externalAnalysisStored=true;
     row.externalPdfFolder="active-pdfs";
     row.externalFileName=`${workspaceFileName(entry.id)}.pdf`;
@@ -888,6 +896,7 @@ async function performWorkspaceBackup(){
   let snapshotExternalStateChanged=false;
 
   for(const entry of files){
+    if(entry.sourceOnly) continue; // dibaca langsung dari tempat asal: PDF tidak disalin ke folder cadangan
     const key=`active:${entry.id}`;
     const targetName=`${workspaceFileName(entry.id)}.pdf`;
     if(!workspaceSyncedPdfIds.has(key)){
@@ -1085,7 +1094,7 @@ async function restoreFromWorkspaceManifest(manifest){
   if(Number.isFinite(Number(state.samplingThreshold))) document.getElementById("samplingThreshold").value=Number(state.samplingThreshold);
 
   files=(manifest.activeFiles||[]).map(row=>{
-    const entry=rebuildEntry(Object.assign({},row,{blobStored:false,analysisStored:false,externalStored:true,externalAnalysisStored:true}));
+    const entry=rebuildEntry(Object.assign({},row,{blobStored:false,analysisStored:false,externalStored:!row.sourceOnly,externalAnalysisStored:true}));
     entry.error=row.error||null;
     return entry;
   });
@@ -2031,22 +2040,53 @@ async function processFilesBatch(fileList){
   const batchFingerprints = new Set();
   const list = [];
   let skipped = 0;
+  // Berkas "baca langsung" yang PDF-nya belum terpasang (mis. setelah browser dibuka ulang):
+  // bila berkas yang sama dipilih lagi, pasangkan kembali alih-alih dianggap duplikat.
+  const looseFileKey=row=>`${String(row.name||"").toLowerCase()}|${Number(row.size)||0}|${Number(row.lastModified)||0}`;
+  const detachedByFingerprint = new Map();
+  const detachedByLooseKey = new Map();
+  files.forEach(entry=>{
+    if(!entry.sourceOnly || entry.blob) return;
+    if(entry.fingerprint) detachedByFingerprint.set(entry.fingerprint,entry);
+    const key=looseFileKey(entry);
+    detachedByLooseKey.set(key, detachedByLooseKey.has(key) ? null : entry); // null = ambigu, jangan dipakai
+  });
+  const reattached = [];
   incoming.forEach(f=>{
     const fingerprint = fileFingerprint(f);
-    if(knownFingerprints.has(fingerprint) || batchFingerprints.has(fingerprint)){ skipped++; return; }
+    if(batchFingerprints.has(fingerprint)){ skipped++; return; }
+    let waiting = detachedByFingerprint.get(fingerprint) || detachedByLooseKey.get(looseFileKey(f)) || null;
+    if(waiting && waiting.blob) waiting=null; // sudah terpasang oleh berkas lain di unggahan ini
+    if(waiting){
+      batchFingerprints.add(fingerprint);
+      waiting.blob=f;
+      waiting.sourceMissing=false;
+      reattached.push(waiting);
+      return;
+    }
+    if(knownFingerprints.has(fingerprint)){ skipped++; return; }
     batchFingerprints.add(fingerprint);
     list.push({file:f, fingerprint});
   });
   const progress = document.getElementById("progressLine");
-  if(list.length===0){
+  // Berkas terpasang kembali yang analisisnya terputus / gagal karena PDF tidak tersedia dibaca ulang.
+  const reanalyze = reattached.filter(entry=>entry.pending || (entry.error && entry.errorKind==="storage"));
+  reanalyze.forEach(entry=>{ entry.pending=true; entry.error=null; entry.errorKind=null; });
+  reattached.forEach(entry=>{ if(entry.ocr && entry.ocr.error) entry.ocr.error=null; });
+  if(list.length===0 && reanalyze.length===0){
     UploadProgress.hide();
-    progress.textContent = `${skipped} berkas dilewati karena sudah ada di antrean atau sudah selesai diperiksa.`;
+    if(reattached.length){
+      renderResults();
+      reattached.forEach(entry=>enqueueAutoOcr(entry));
+      progress.textContent = `${reattached.length} berkas dipasangkan kembali dengan PDF asalnya` + (skipped?`; ${skipped} berkas lain sudah ada.`:".");
+    }else{
+      progress.textContent = `${skipped} berkas dilewati karena sudah ada di antrean atau sudah selesai diperiksa.`;
+    }
     setTimeout(()=>{ progress.textContent=""; }, 5000);
-    return {added:0, skipped};
+    return {added:0, skipped, reattached:reattached.length};
   }
   const useWorkspaceStorage=!!workspaceDirHandle && await ensureWorkspacePermission(workspaceDirHandle,false);
-  UploadProgress.start(list.length, list.reduce((s,r)=>s+(r.file.size||0),0));
-  if(!(await preflightStorageForFiles(list,useWorkspaceStorage))){ UploadProgress.hide(); return {added:0,skipped,cancelled:true}; }
+  UploadProgress.start(list.length+reanalyze.length, list.reduce((s,r)=>s+(r.file.size||0),0));
   document.getElementById("emptyNote").style.display = "none";
   const newEntries = list.map(({file:f,fingerprint})=>{
     const order = fileCounter;
@@ -2056,6 +2096,7 @@ async function processFilesBatch(fileList){
     return {
       id, name:f.name, category:guessCategory(f.name,currentEditorCat), digitalText:"", ocrText:"",
       pending:true, itemsStatus:{}, objectUrl:"", blob:f, blobStored:false, open:false, pdfDoc:null,
+      sourceOnly:true, // PDF dibaca langsung dari tempat asalnya; tidak disalin ke browser/folder cadangan
       pageTexts:[], ocrCandidates:[], _analysisLoaded:true, analysisStored:false,
       fingerprint, order, size:f.size||0, lastModified:f.lastModified||0,
       ocr:{running:false,done:false,error:null,progress:"",processedPages:[],automatic:false}
@@ -2066,87 +2107,34 @@ async function processFilesBatch(fileList){
   renderResults();
   UploadProgress.phase("store");
 
-  // Simpan PDF sekali per berkas, dalam transaksi kecil. Perubahan checklist berikutnya
-  // hanya menyimpan metadata berkas tersebut dan tidak pernah menulis ulang semua PDF.
+  // PDF TIDAK disalin, baik ke penyimpanan browser maupun ke Folder Cadangan. Berkas dibaca
+  // langsung dari tempat asalnya lewat referensi File yang dipegang selama sesi ini; yang
+  // disimpan hanya metadata dan hasil analisis (kecil). Karena itu tidak ada batas kuota dan
+  // tidak perlu mencadangkan dulu untuk memeriksa ratusan/ribuan berkas. Setelah browser
+  // ditutup hasil tetap ada; untuk pratinjau/OCR cukup pilih ulang berkas yang sama.
+  const storageFailures=0;
   activeStorageBarrier=(async()=>{
-    let failures=0;
-    if(useWorkspaceStorage){
-      const activePdfDir=await getWorkspaceDirectory("active-pdfs",true);
-      let storedCount=0;
-      for(let i=0;i<newEntries.length;i+=20){
-        const chunk=newEntries.slice(i,i+20);
-        const failed=[];
-        let cursor=0;
-        async function writer(){
-          while(cursor<chunk.length){
-            const entry=chunk[cursor++];
-            try{
-              const targetName=`${workspaceFileName(entry.id)}.pdf`;
-              await writeWorkspaceFile(activePdfDir,targetName,entry.blob);
-              entry.externalStored=true;
-              entry.externalPdfFolder="active-pdfs";
-              entry.externalFileName=targetName;
-              entry.blobStored=false;
-              workspaceSyncedPdfIds.add(`active:${entry.id}`);
-              storedCount++;
-              setWorkspaceStatus(`Menyimpan PDF baru ke folder cadangan ${storedCount} dari ${newEntries.length}…`);
-              UploadProgress.store(Math.min(newEntries.length,storedCount));
-            }catch(err){ failed.push(entry); console.warn("PDF gagal ditulis ke folder cadangan:",err); }
-          }
-        }
-        await Promise.all(Array.from({length:Math.min(2,chunk.length)},()=>writer()));
-        const succeeded=chunk.filter(entry=>!failed.includes(entry));
-        if(succeeded.length){
-          try{ await dbWriteActiveEntries(succeeded,false); }
-          catch(err){
-            succeeded.forEach(entry=>dirtyActiveIds.add(entry.id));
-            updateSaveIndicator(false,err);
-          }
-        }
-        if(failed.length){
-          failed.forEach(entry=>{ entry.blobStored=true; });
-          try{ await dbWriteActiveEntries(failed,true); }
-          catch(err){
-            failed.forEach(entry=>{ entry.blobStored=false; });
-            failures+=failed.length;
-            updateSaveIndicator(false,err);
-          }
-        }
-        succeeded.forEach(entry=>{ if(!entry.objectUrl) entry.blob=null; });
-        UploadProgress.store(Math.min(newEntries.length,i+chunk.length));
-        await yieldToBrowser();
-      }
-    }else{
-      const storageGroups=partitionEntriesBySize(newEntries,20,64*1024*1024);
-      let storedSoFar=0;
-      for(const chunk of storageGroups){
-        chunk.forEach(entry=>{ entry.blobStored=true; });
-        try{
-          await dbWriteActiveEntries(chunk,true);
-          await yieldToBrowser();
-        }catch(err){
-          chunk.forEach(entry=>{ entry.blobStored=false; });
-          failures+=chunk.length;
-          console.warn("Sebagian PDF belum tersimpan otomatis:",err);
-          updateSaveIndicator(false,err);
-        }
-        storedSoFar+=chunk.length;
-        UploadProgress.store(storedSoFar);
-      }
+    for(let i=0;i<newEntries.length;i+=200){
+      const chunk=newEntries.slice(i,i+200);
+      try{ await dbWriteActiveEntries(chunk,false); }
+      catch(err){ chunk.forEach(entry=>dirtyActiveIds.add(entry.id)); updateSaveIndicator(false,err); }
+      UploadProgress.store(Math.min(newEntries.length,i+chunk.length));
+      await yieldToBrowser();
     }
-    return failures;
+    return 0;
   })();
-  const storageFailures=await activeStorageBarrier;
+  await activeStorageBarrier;
 
   UploadProgress.phase("read");
   let processed=0;
   const ANALYSIS_CHUNK=50;
-  for(let start=0;start<newEntries.length;start+=ANALYSIS_CHUNK){
-    const chunk=newEntries.slice(start,start+ANALYSIS_CHUNK);
+  const toAnalyze=reanalyze.concat(newEntries);
+  for(let start=0;start<toAnalyze.length;start+=ANALYSIS_CHUNK){
+    const chunk=toAnalyze.slice(start,start+ANALYSIS_CHUNK);
     await processAnalysisChunk(chunk,()=>{
       processed++;
       UploadProgress.read(processed);
-      progress.textContent=`Memproses file ${processed} dari ${newEntries.length}${skipped?` • ${skipped} duplikat dilewati`:""}...`;
+      progress.textContent=`Memproses file ${processed} dari ${toAnalyze.length}${skipped?` • ${skipped} duplikat dilewati`:""}...`;
     },(entry,i,total)=>{
       UploadProgress.note(`mencoba ulang berkas yang tersendat (${i+1}/${total})`);
       progress.textContent=`Mencoba ulang otomatis ${i+1} dari ${total} berkas yang tersendat...`;
@@ -2160,10 +2148,13 @@ async function processFilesBatch(fileList){
     await yieldToBrowser();
   }
   await persistState();
-  if(useWorkspaceStorage) await saveWorkspaceBackup(true);
-  const failedAfterImport=newEntries.filter(entry=>entry.error).length;
+  // Cadangan hasil ke folder berjalan di latar belakang; pengguna tidak perlu menunggunya.
+  if(useWorkspaceStorage) scheduleWorkspaceBackup(1500);
+  reattached.forEach(entry=>{ if(!entry.pending && !entry.error) enqueueAutoOcr(entry); });
+  const failedAfterImport=toAnalyze.filter(entry=>entry.error).length;
   UploadProgress.finish(failedAfterImport, storageFailures);
-  progress.textContent = `Selesai memproses ${newEntries.length} file` +
+  progress.textContent = `Selesai memproses ${toAnalyze.length} file` +
+    (reattached.length ? `; ${reattached.length} berkas dipasangkan kembali dengan PDF asalnya` : "") +
     (failedAfterImport ? `; ${failedAfterImport} gagal dibaca (lihat kotak merah untuk memuat ulang sekaligus)` : "") +
     (skipped ? `; ${skipped} duplikat tidak dimasukkan` : "") +
     (storageFailures ? `; ${storageFailures} PDF tidak berhasil disimpan permanen karena keterbatasan penyimpanan.` : ".");
@@ -2864,6 +2855,7 @@ async function ensureEntryBlob(entry){
     blob=await readWorkspaceBlob(entry.externalPdfFolder||"active-pdfs",entry.externalFileName||`${workspaceFileName(entry.id)}.pdf`);
   }
   if(!blob){
+    if(entry.sourceOnly) throw new Error(SOURCE_MISSING_MESSAGE);
     if(entry.externalStored) throw new Error("berkas ada di cadangan; hubungkan atau pulihkan folder cadangan terlebih dahulu");
     throw new Error("berkas asli tidak ditemukan di penyimpanan");
   }
@@ -3388,6 +3380,7 @@ function archivedSummaryFromEntry(entry){
     noteNames: cat ? fileConditionalNotes(entry, cat).map(item=>item.name) : [],
     // Peringatan identitas per berkas (tanpa SEP ganda, yang dihitung ulang saat laporan dibuat).
     identityNotes: entry.error ? [] : identityWarnings(entry, null),
+    rm: (entry.identity && entry.identity.rm) || "",
     error: entry.error||null,
     fingerprint: entry.fingerprint||"",
     order:Number.isFinite(entry.order)?entry.order:0,
@@ -3657,7 +3650,7 @@ function renderResults(){
     let badgeHtml;
     if(entry.pending) badgeHtml = `<span class="badge loading">Memproses...</span>`;
     else if(entry.error) badgeHtml = `<span class="badge incomplete" title="${escapeAttr(entry.error)}">Gagal membaca PDF</span>`;
-    else badgeHtml = isComplete ? completeBadgeHtml(fileConditionalNotes(entry).map(item=>item.name)) : `<span class="badge incomplete">Kurang ${missing.length} dokumen</span>`;
+    else badgeHtml = isComplete ? completeBadgeHtml(fileConditionalNotes(entry).map(item=>item.name)) : `<span class="badge incomplete" title="${escapeAttr("Dokumen WAJIB yang belum ditemukan: "+missing.map(item=>item.name).join("; "))}">Kurang ${missing.length} dokumen</span>`;
     if(!entry.pending && !entry.error) badgeHtml += identityBadgeHtml(identityWarnings(entry,duplicateSepSet));
 
     const retryBtnHtml = entry.error ? `<button class="mini-action-btn retry-file-btn" type="button" ${retryAllState?"disabled":""} title="Muat PDF yang sama dan ulangi proses pembacaan.">Coba baca ulang</button>` : "";
@@ -3697,7 +3690,7 @@ function renderResults(){
         <div class="check-pane"></div>
       </div>
       ${ocrHtml}
-      <div class="file-foot">${entry.error ? `<span class="fail-reason">&#9888; ${escapeAttr(entry.error)}</span> &middot; ` : ""}${cat.label} &middot; ${cat.items.length} jenis dokumen dicek</div>
+      <div class="file-foot">${entry.error ? `<span class="fail-reason">&#9888; ${escapeAttr(entry.error)}</span> &middot; ` : ""}${(entry.sourceOnly && !entry.blob && !entry.error) ? `<span class="fail-reason" title="${escapeAttr(SOURCE_MISSING_MESSAGE)}">PDF asal belum terpasang &mdash; pilih ulang berkas yang sama untuk pratinjau/OCR</span> &middot; ` : ""}${cat.label} &middot; ${cat.items.length} jenis dokumen dicek</div>
     `;
 
     card.querySelector(".file-head").addEventListener("click", (e)=>{
@@ -3986,7 +3979,9 @@ function verificationReportRows(){
     // Peringatan identitas tidak mengubah Keterangan; ditulis di kolom Rincian agar ikut tercetak.
     const identity=(row.identityNotes||[]).slice();
     if(row.sep && duplicateSeps.has(row.sep)) identity.push(`No. SEP ${row.sep} juga ada di berkas lain (kemungkinan berkas ganda)`);
-    if(identity.length && !row.error) noteLines.push("PERINGATAN IDENTITAS:",...identity.map((text,i)=>`${i+1}. ${text}`));
+    // Kolom tersendiri (tidak dicampur dengan rincian berkas kurang).
+    const identitas=(identity.length && !row.error) ? identity.map((text,i)=>`${i+1}. ${text}`).join("\n") : "-";
+    const identityLines=(identity.length && !row.error) ? identity.length : 1;
     let lineCount=1;
     if(row.error){ keterangan="Gagal Baca"; rincian=row.error; }
     else if(row.isComplete){
@@ -3999,7 +3994,8 @@ function verificationReportRows(){
     }
     return {
       no:idx+1, sep:row.sep||extractSepNumber(row.name)||"", keterangan, rincian,
-      lines:lineCount,
+      rm:row.rm||"", identitas,
+      lines:Math.max(lineCount,identityLines),
       kategori:row.categoryLabel||(categories[row.category]||{}).label||row.category||"",
       name:row.name||""
     };
@@ -4020,23 +4016,23 @@ async function buildVerificationWorkbook(rows,ZipEngine){
   // ---- Sheet 1: Hasil Verifikasi ----
   const last=rows.length+4;
   const sheet=[`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${ns}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">`,
-    `<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="A1:E${last}"/>`,
+    `<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="A1:G${last}"/>`,
     `<sheetViews><sheetView workbookViewId="0" showGridLines="0"><pane ySplit="4" topLeftCell="A5" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>`,
     `<sheetFormatPr defaultRowHeight="15"/>`,
-    `<cols><col min="1" max="1" width="6" customWidth="1"/><col min="2" max="2" width="25" customWidth="1"/><col min="3" max="3" width="14" customWidth="1"/><col min="4" max="4" width="62" customWidth="1"/><col min="5" max="5" width="40" customWidth="1"/></cols><sheetData>`,
+    `<cols><col min="1" max="1" width="6" customWidth="1"/><col min="2" max="2" width="25" customWidth="1"/><col min="3" max="3" width="14" customWidth="1"/><col min="4" max="4" width="14" customWidth="1"/><col min="5" max="5" width="52" customWidth="1"/><col min="6" max="6" width="52" customWidth="1"/><col min="7" max="7" width="40" customWidth="1"/></cols><sheetData>`,
     `<row r="1" ht="24" customHeight="1">${cell("A1","Hasil Verifikasi Kelengkapan Berkas Klaim",1)}</row>`,
     `<row r="2">${cell("A2",`SIPEKA Klaim • BPJS Kesehatan • Diunduh ${stamp} • ${rows.length} berkas: ${counts.Lengkap} lengkap, ${counts.Kurang} kurang, ${counts["Gagal Baca"]} gagal baca`,2)}</row>`,
     `<row r="3" ht="6" customHeight="1"/>`,
-    `<row r="4" ht="22" customHeight="1">${["No","SEP","Keterangan","Rincian Berkas Kurang / Catatan","Nama File"].map((h,i)=>cell(String.fromCharCode(65+i)+"4",h,3)).join("")}</row>`];
+    `<row r="4" ht="22" customHeight="1">${["No","SEP","No. RM","Keterangan","Rincian Berkas Kurang / Catatan","Peringatan Identitas (RM/SEP/Kartu)","Nama File"].map((h,i)=>cell(String.fromCharCode(65+i)+"4",h,3)).join("")}</row>`];
   for(let i=0;i<rows.length;i++){
     const r=rows[i], n=i+5;
-    const wrapLines=Math.max(r.lines, Math.ceil(String(r.rincian).length/70), Math.ceil(r.name.length/45));
+    const wrapLines=Math.max(r.lines, Math.ceil(String(r.rincian).length/60), Math.ceil(String(r.identitas).length/60), Math.ceil(r.name.length/45));
     sheet.push(`<row r="${n}" ht="${Math.max(18,wrapLines*15+3)}" customHeight="1">`+
-      cell(`A${n}`,r.no,5,true)+cell(`B${n}`,r.sep||"Tidak terbaca",r.sep?9:10)+cell(`C${n}`,r.keterangan,ketStyle[r.keterangan])+
-      cell(`D${n}`,r.rincian,4)+cell(`E${n}`,r.name,11)+`</row>`);
+      cell(`A${n}`,r.no,5,true)+cell(`B${n}`,r.sep||"Tidak terbaca",r.sep?9:10)+cell(`C${n}`,r.rm||"Tidak terbaca",r.rm?9:10)+cell(`D${n}`,r.keterangan,ketStyle[r.keterangan])+
+      cell(`E${n}`,r.rincian,4)+cell(`F${n}`,r.identitas,4)+cell(`G${n}`,r.name,11)+`</row>`);
     if(i%1000===999) await yieldToBrowser();
   }
-  sheet.push(`</sheetData><autoFilter ref="A4:E${last}"/><mergeCells count="2"><mergeCell ref="A1:E1"/><mergeCell ref="A2:E2"/></mergeCells>`,
+  sheet.push(`</sheetData><autoFilter ref="A4:G${last}"/><mergeCells count="2"><mergeCell ref="A1:G1"/><mergeCell ref="A2:G2"/></mergeCells>`,
     `<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/>`,
     `<pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/>`,
     `<headerFooter><oddFooter>&amp;LSIPEKA Klaim&amp;RHalaman &amp;P dari &amp;N</oddFooter></headerFooter></worksheet>`);
@@ -4065,7 +4061,7 @@ async function buildVerificationWorkbook(rows,ZipEngine){
   zip.file("xl/worksheets/sheet2.xml",sum.join(""));
   zip.file("[Content_Types].xml",`<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`);
   zip.file("_rels/.rels",`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`);
-  zip.file("xl/workbook.xml",`<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="${ns}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Hasil Verifikasi" sheetId="1" r:id="rId1"/><sheet name="Ringkasan" sheetId="2" r:id="rId2"/></sheets><definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="0" hidden="1">'Hasil Verifikasi'!$A$4:$E$${last}</definedName><definedName name="_xlnm.Print_Titles" localSheetId="0">'Hasil Verifikasi'!$4:$4</definedName></definedNames></workbook>`);
+  zip.file("xl/workbook.xml",`<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="${ns}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Hasil Verifikasi" sheetId="1" r:id="rId1"/><sheet name="Ringkasan" sheetId="2" r:id="rId2"/></sheets><definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="0" hidden="1">'Hasil Verifikasi'!$A$4:$G$${last}</definedName><definedName name="_xlnm.Print_Titles" localSheetId="0">'Hasil Verifikasi'!$4:$4</definedName></definedNames></workbook>`);
   zip.file("xl/_rels/workbook.xml.rels",`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`);
   const B='<left style="thin"><color rgb="FFC5D3E0"/></left><right style="thin"><color rgb="FFC5D3E0"/></right><top style="thin"><color rgb="FFC5D3E0"/></top><bottom style="thin"><color rgb="FFC5D3E0"/></bottom><diagonal/>';
   const xf=(font,fill,border,h,v,wrap)=>`<xf numFmtId="0" fontId="${font}" fillId="${fill}" borderId="${border}" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment${h?` horizontal="${h}"`:""} vertical="${v||"top"}"${wrap?' wrapText="1"':""}/></xf>`;
@@ -4153,7 +4149,7 @@ document.getElementById("exportBtn").onclick = async ()=>{
 
   const csvDuplicateSeps=findDuplicateSeps();
   function buildCsvForCategory(catKey, resultRows){
-    const rows = [["No Urut","ID Hasil","Nama File","Kategori","Status Keseluruhan File","Jumlah Dokumen Kurang","Jenis Baris","Rincian Dokumen Kurang","Waktu Disimpan","Posisi Data"]];
+    const rows = [["No Urut","ID Hasil","Nama File","Kategori","Status Keseluruhan File","Jumlah Dokumen Kurang","Jenis Baris","Rincian Dokumen Kurang","Waktu Disimpan","Posisi Data","No. RM"]];
     resultRows.forEach((row,idx)=>{
       const catLabel = row.categoryLabel || (categories[catKey]||{}).label || catKey;
       const missing = row.missingNames||[];
@@ -4166,7 +4162,7 @@ document.getElementById("exportBtn").onclick = async ()=>{
         noUrut, row.id, row.name, catLabel, fileStatus, missing.length,
         "Ringkasan Berkas",
         missing.length?missing.join("; "):"-",
-        completedAt, row.stored?"Hasil tersimpan":"Antrean aktif"
+        completedAt, row.stored?"Hasil tersimpan":"Antrean aktif", row.rm||""
       ]);
       // Baris rincian: satu baris tersendiri untuk SETIAP dokumen yang kurang, agar tidak pernah terpotong/tersembunyi
       missing.forEach((docName,mIdx)=>{
@@ -4174,7 +4170,7 @@ document.getElementById("exportBtn").onclick = async ()=>{
           noUrut, row.id, row.name, catLabel, fileStatus, missing.length,
           `Dokumen Kurang ${mIdx+1} dari ${missing.length}`,
           docName,
-          completedAt, row.stored?"Hasil tersimpan":"Antrean aktif"
+          completedAt, row.stored?"Hasil tersimpan":"Antrean aktif", row.rm||""
         ]);
       });
       // Peringatan identitas (No. RM/SEP/kartu tidak konsisten, SEP ganda) - tidak mengubah status berkas
@@ -4185,7 +4181,7 @@ document.getElementById("exportBtn").onclick = async ()=>{
           noUrut, row.id, row.name, catLabel, fileStatus, missing.length,
           `Peringatan Identitas ${iIdx+1} dari ${identityRows.length}`,
           text,
-          completedAt, row.stored?"Hasil tersimpan":"Antrean aktif"
+          completedAt, row.stored?"Hasil tersimpan":"Antrean aktif", row.rm||""
         ]);
       });
       // Catatan: dokumen kondisional yang tidak ditemukan (tidak mengubah status berkas)
@@ -4194,7 +4190,7 @@ document.getElementById("exportBtn").onclick = async ()=>{
           noUrut, row.id, row.name, catLabel, fileStatus, missing.length,
           `Catatan Kondisional ${nIdx+1} dari ${notes.length}`,
           docName,
-          completedAt, row.stored?"Hasil tersimpan":"Antrean aktif"
+          completedAt, row.stored?"Hasil tersimpan":"Antrean aktif", row.rm||""
         ]);
       });
     });
