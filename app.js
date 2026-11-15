@@ -427,6 +427,7 @@ function serializeEntry(e, includeBlob, includeAnalysis){
     size:Number.isFinite(e.size)?e.size:0, lastModified:Number.isFinite(e.lastModified)?e.lastModified:0,
     blobStored:!!e.blobStored, analysisStored:!!e.analysisStored, sourceOnly:!!e.sourceOnly,
     externalStored:!!e.externalStored, externalAnalysisStored:!!e.externalAnalysisStored,
+    externalAnalysisGroup:(e.externalAnalysisGroup!=null)?e.externalAnalysisGroup:null,
     externalPdfFolder:e.externalPdfFolder||"active-pdfs", externalFileName:e.externalFileName||`${e.id}.pdf`,
     ocrCandidates:Array.isArray(e.ocrCandidates)?e.ocrCandidates:[],
     identity:e.identity||null,
@@ -633,25 +634,45 @@ async function validatePdfBlob(blob,fileName){
 /* Satu "mesin baca" PDF dipakai bersama untuk semua berkas. Sebelumnya setiap PDF
    membuat worker baru; pada ratusan berkas hal ini menguras memori/CPU dan menjadi
    penyebab utama "gagal membaca PDF" secara acak. Worker diganti otomatis bila macet. */
-let sharedPdfWorker=null;
-let sharedPdfWorkerSrc="";
+/* Kumpulan kecil "mesin baca" (maksimal 3, mengikuti batas paralel perangkat). Satu worker
+   hanya bisa mengurai satu PDF pada satu waktu, jadi dengan satu worker pembacaan paralel
+   tetap antre. Terukur pada PDF klaim nyata: 1 worker ~65 ms/berkas, 3 worker ~30 ms/berkas.
+   Tiap dokumen diberi worker yang paling sedikit bebannya. */
+let pdfWorkerPool=[];
+let pdfWorkerPoolSrc="";
+function pdfWorkerPoolSize(){
+  let size=1;
+  try{ size=analysisConcurrencyLimit(0); }catch(e){}
+  return Math.max(1,Math.min(3,size));
+}
 function getSharedPdfWorker(){
   const src=window.pdfjsLib.GlobalWorkerOptions.workerSrc||"";
-  if(sharedPdfWorker && sharedPdfWorkerSrc===src && !sharedPdfWorker.destroyed) return sharedPdfWorker;
-  if(sharedPdfWorker) retireSharedPdfWorker();
-  sharedPdfWorker=new window.pdfjsLib.PDFWorker({name:"sipeka-pdf"});
-  sharedPdfWorkerSrc=src;
-  return sharedPdfWorker;
+  if(pdfWorkerPoolSrc!==src){ retireSharedPdfWorker(); pdfWorkerPoolSrc=src; }
+  pdfWorkerPool=pdfWorkerPool.filter(worker=>worker && !worker.destroyed && !worker._sipekaRetired);
+  const load=worker=>(worker._sipekaDocs||0)+(worker._sipekaLoading||0); // dokumen terbuka + yang sedang dimuat
+  const idle=pdfWorkerPool.find(worker=>!load(worker));
+  if(idle) return idle;
+  if(pdfWorkerPool.length<pdfWorkerPoolSize()){
+    const worker=new window.pdfjsLib.PDFWorker({name:`sipeka-pdf-${pdfWorkerPool.length+1}`});
+    pdfWorkerPool.push(worker);
+    return worker;
+  }
+  return pdfWorkerPool.reduce((best,worker)=>(load(worker)<load(best)?worker:best),pdfWorkerPool[0]);
 }
-function retireSharedPdfWorker(){
-  const old=sharedPdfWorker;
-  sharedPdfWorker=null; sharedPdfWorkerSrc="";
+function retirePdfWorker(old){
   if(!old) return;
+  pdfWorkerPool=pdfWorkerPool.filter(worker=>worker!==old);
   // Worker lama baru dimatikan setelah semua dokumen yang masih memakainya ditutup
   // (mis. pratinjau yang sedang dibuka), dengan batas aman 5 menit untuk worker yang benar-benar macet.
   old._sipekaRetired=true;
   if(!old._sipekaDocs) destroyRetiredWorker(old);
   else old._sipekaKillTimer=setTimeout(()=>destroyRetiredWorker(old),300000);
+}
+// Pensiunkan semua worker (dipakai saat ada yang macet tetapi tidak diketahui yang mana).
+function retireSharedPdfWorker(){
+  const all=pdfWorkerPool.slice();
+  pdfWorkerPool=[];
+  all.forEach(retirePdfWorker);
 }
 function destroyRetiredWorker(worker){
   if(worker._sipekaKillTimer) clearTimeout(worker._sipekaKillTimer);
@@ -701,6 +722,7 @@ async function openPdfDocument(blob,fileName,timeoutMs){
     configurePdfEngine(workerSrc);
     const buffer=await blob.arrayBuffer();
     const pdfWorker=getSharedPdfWorker();
+    pdfWorker._sipekaLoading=(pdfWorker._sipekaLoading||0)+1;
     const loadingTask=window.pdfjsLib.getDocument({data:buffer,isEvalSupported:false,stopAtErrors:false,worker:pdfWorker});
     let timeoutId=null;
     const timeoutPromise=new Promise((_,reject)=>{
@@ -712,10 +734,13 @@ async function openPdfDocument(blob,fileName,timeoutMs){
     try{ return trackPdfDocWorker(await Promise.race([loadingTask.promise,timeoutPromise]),pdfWorker); }
     catch(err){
       try{ await loadingTask.destroy(); }catch(e){}
-      if(err&&(err.code==="TIMEOUT"||/worker/i.test(String(err.message||"")))) retireSharedPdfWorker();
+      if(err&&(err.code==="TIMEOUT"||/worker/i.test(String(err.message||"")))) retirePdfWorker(pdfWorker);
       throw err;
     }
-    finally{ if(timeoutId!==null) clearTimeout(timeoutId); }
+    finally{
+      if(timeoutId!==null) clearTimeout(timeoutId);
+      pdfWorker._sipekaLoading=Math.max(0,(pdfWorker._sipekaLoading||1)-1);
+    }
   }
   try{
     return await attempt(window.pdfjsLib.GlobalWorkerOptions.workerSrc||PDFJS_PRIMARY_WORKER);
@@ -874,6 +899,38 @@ function workspaceManifest(){
   };
 }
 
+const ANALYSIS_GROUP_SIZE=250;
+const workspaceDirtyAnalysisGroups=new Set(); // kelompok yang anggotanya berkurang (diarsipkan)
+let analysisGroupCache={group:-1,items:null}; // satu kelompok terakhir yang dibaca dari cadangan
+function analysisGroupOf(entry){ return Math.floor(Math.max(0,Number(entry.order)||0)/ANALYSIS_GROUP_SIZE); }
+function analysisGroupFileName(group){ return `kelompok-${String(group).padStart(5,"0")}.json`; }
+async function readAnalysisFromGroup(entry){
+  const group=entry.externalAnalysisGroup;
+  if(analysisGroupCache.group!==group){
+    const blob=await readWorkspaceBlob("analysis",analysisGroupFileName(group));
+    const parsed=JSON.parse(await blob.text());
+    analysisGroupCache={group,items:(parsed&&parsed.items)||{}};
+  }
+  return analysisGroupCache.items[entry.id]||null;
+}
+// Ambil banyak kunci dalam SATU transaksi (jauh lebih cepat daripada membuka basis data per kunci).
+function dbGetMany(storeName,keys){
+  if(!keys.length) return Promise.resolve([]);
+  return new Promise(async(resolve,reject)=>{
+    let db;
+    try{ db=await dbOpenFresh(); }catch(err){ reject(err); return; }
+    const out=new Array(keys.length);
+    let tx;
+    try{
+      tx=db.transaction(storeName,"readonly");
+      const store=tx.objectStore(storeName);
+      keys.forEach((key,idx)=>{ const request=store.get(key); request.onsuccess=()=>{ out[idx]=request.result; }; });
+    }catch(err){ db.close(); reject(err); return; }
+    tx.oncomplete=()=>{ db.close(); resolve(out); };
+    tx.onerror=()=>{ db.close(); reject(tx.error||new Error("Gagal membaca hasil analisis.")); };
+    tx.onabort=()=>{ db.close(); reject(tx.error||new Error("Pembacaan hasil analisis dibatalkan.")); };
+  });
+}
 async function deleteWorkspaceEntryIfPresent(directory,name){
   try{ await directory.removeEntry(name); }
   catch(err){ if(err && err.name!=="NotFoundError") console.warn("Gagal membersihkan cadangan lama:",err); }
@@ -965,19 +1022,66 @@ async function performWorkspaceBackup(){
     if(copied%25===0) await yieldToBrowser();
   }
 
-  for(let i=0;i<files.length;i++){
-    const entry=files[i];
-    const mustWrite=!workspaceSyncedAnalysisIds.has(entry.id)||workspaceDirtyAnalysisIds.has(entry.id);
-    if(mustWrite){
-      if(i%25===0) setWorkspaceStatus(`Menyimpan progres analisis ${i+1} dari ${files.length}…`);
-      await ensureAnalysisData(entry);
-      await writeWorkspaceFile(analysisDir,`${workspaceFileName(entry.id)}.json`,JSON.stringify(serializeAnalysis(entry)));
-      workspaceSyncedAnalysisIds.add(entry.id);
-      workspaceDirtyAnalysisIds.delete(entry.id);
-      entry.externalAnalysisStored=true;
-      releaseEntryHeavyData(entry);
+  // Hasil analisis ditulis BERKELOMPOK (ANALYSIS_GROUP_SIZE berkas per file), bukan satu file per
+  // berkas. Menulis ribuan file kecil lewat browser sangat lambat (terukur ~2 file/detik);
+  // dengan kelompok, 1.000 berkas hanya menjadi 4 penulisan. Kelompok ditulis ulang utuh bila
+  // ada anggotanya yang berubah, dan dihapus bila semua anggotanya sudah diarsipkan.
+  const dirtyGroups=new Set(workspaceDirtyAnalysisGroups);
+  files.forEach(entry=>{
+    if(!workspaceSyncedAnalysisIds.has(entry.id)||workspaceDirtyAnalysisIds.has(entry.id)) dirtyGroups.add(analysisGroupOf(entry));
+  });
+  if(dirtyGroups.size){
+    const membersByGroup=new Map();
+    files.forEach(entry=>{
+      const group=analysisGroupOf(entry);
+      if(!dirtyGroups.has(group)) return;
+      if(!membersByGroup.has(group)) membersByGroup.set(group,[]);
+      membersByGroup.get(group).push(entry);
+    });
+    let groupsDone=0;
+    for(const group of dirtyGroups){
+      const members=membersByGroup.get(group)||[];
+      const fileName=analysisGroupFileName(group);
+      groupsDone++;
+      if(!members.length){
+        await deleteWorkspaceEntryIfPresent(analysisDir,fileName);
+        workspaceDirtyAnalysisGroups.delete(group);
+        if(analysisGroupCache.group===group) analysisGroupCache={group:-1,items:null};
+        continue;
+      }
+      setWorkspaceStatus(`Menyimpan hasil analisis kelompok ${groupsDone} dari ${dirtyGroups.size}…`);
+      const items={};
+      const notLoaded=members.filter(entry=>!entry._analysisLoaded);
+      const stored=notLoaded.length ? await dbGetMany(DB_ANALYSIS_STORE,notLoaded.map(entry=>entry.id)) : [];
+      for(let i=0;i<notLoaded.length;i++){
+        const entry=notLoaded[i], row=stored[i];
+        if(row){
+          items[entry.id]={digitalText:row.digitalText||"",ocrText:row.ocrText||"",ocrPageTexts:row.ocrPageTexts||{},pageTexts:row.pageTexts||[]};
+        }else{
+          // Tidak ada di browser (mis. sesi hasil pemulihan): ambil dari cadangan yang sudah ada.
+          await ensureAnalysisData(entry);
+          items[entry.id]=serializeAnalysis(entry);
+          releaseEntryHeavyData(entry);
+        }
+      }
+      members.forEach(entry=>{ if(entry._analysisLoaded && !items[entry.id]) items[entry.id]=serializeAnalysis(entry); });
+      await writeWorkspaceFile(analysisDir,fileName,JSON.stringify({format:"SIPEKA_ANALYSIS_GROUP",group,items}));
+      if(analysisGroupCache.group===group) analysisGroupCache={group:-1,items:null};
+      for(const entry of members){
+        const hadLegacyFile=!!entry.externalAnalysisStored && entry.externalAnalysisGroup==null;
+        workspaceSyncedAnalysisIds.add(entry.id);
+        workspaceDirtyAnalysisIds.delete(entry.id);
+        if(entry.externalAnalysisGroup!==group || !entry.externalAnalysisStored){
+          entry.externalAnalysisGroup=group;
+          entry.externalAnalysisStored=true;
+          if(!activeExternalUpdates.includes(entry)) activeExternalUpdates.push(entry);
+        }
+        // Cadangan format lama (satu file per berkas) tidak diperlukan lagi setelah masuk kelompok.
+        if(hadLegacyFile) await deleteWorkspaceEntryIfPresent(analysisDir,`${workspaceFileName(entry.id)}.json`);
+      }
+      workspaceDirtyAnalysisGroups.delete(group);
+      await yieldToBrowser();
     }
-    if(i%100===0) await yieldToBrowser();
   }
 
   // Commit manifest setelah seluruh penambahan selesai. Penghapusan PDF lama dilakukan
@@ -1006,6 +1110,7 @@ async function performWorkspaceBackup(){
 
 async function saveWorkspaceBackup(forceNow){
   clearTimeout(workspaceSaveTimer);
+  workspaceSaveTimer=null;
   if(!workspaceDirHandle) return false;
   if(workspaceSaveInFlight){
     workspaceSaveAgain=true;
@@ -1032,7 +1137,14 @@ async function saveWorkspaceBackup(forceNow){
 function scheduleWorkspaceBackup(delay){
   if(!workspaceDirHandle) return;
   clearTimeout(workspaceSaveTimer);
-  workspaceSaveTimer=setTimeout(()=>saveWorkspaceBackup(false),typeof delay==="number"?delay:3000);
+  workspaceSaveTimer=setTimeout(()=>{ workspaceSaveTimer=null; saveWorkspaceBackup(false); },typeof delay==="number"?delay:3000);
+}
+// Untuk pemicu yang datang bertubi-tubi (mis. setiap beberapa halaman OCR): jangan menulis ulang
+// file sesi tiap kali. Cadangan dijalankan paling lambat `delay` ms lagi, dan permintaan
+// berikutnya tidak menunda maupun menggandakan jadwal yang sudah ada.
+function scheduleWorkspaceBackupLazy(delay){
+  if(!workspaceDirHandle || workspaceSaveTimer!==null) return;
+  workspaceSaveTimer=setTimeout(()=>{ workspaceSaveTimer=null; saveWorkspaceBackup(false); },typeof delay==="number"?delay:45000);
 }
 
 async function waitForGuaranteedLocalSave(){
@@ -1067,7 +1179,7 @@ async function restoreFromWorkspaceManifest(manifest){
     throw new Error("Folder ini tidak berisi cadangan SIPEKA yang valid.");
   }
   clearTimeout(saveTimer);
-  clearTimeout(workspaceSaveTimer);
+  clearTimeout(workspaceSaveTimer); workspaceSaveTimer=null;
   clearTimeout(medicineSaveTimer);
   await medicineStorageBarrier.catch(()=>{});
   deletedMedicineRecordIds.clear();
@@ -1128,7 +1240,7 @@ async function restoreFromWorkspaceManifest(manifest){
 
   workspaceSyncedPdfIds.clear();
   workspaceSyncedAnalysisIds.clear();
-  workspaceDirtyAnalysisIds.clear();
+  workspaceDirtyAnalysisIds.clear(); workspaceDirtyAnalysisGroups.clear(); analysisGroupCache={group:-1,items:null};
   workspaceDeletedIds.clear();
   workspaceDeletedMedicineIds.clear();
   files.forEach(entry=>{ workspaceSyncedPdfIds.add(`active:${entry.id}`); workspaceSyncedAnalysisIds.add(entry.id); });
@@ -1247,7 +1359,7 @@ document.getElementById("connectWorkspaceBtn").addEventListener("click",async ()
       workspaceSyncedPdfIds.clear();
       workspaceSyncedAnalysisIds.clear();
     }
-    workspaceDirtyAnalysisIds.clear();
+    workspaceDirtyAnalysisIds.clear(); workspaceDirtyAnalysisGroups.clear(); analysisGroupCache={group:-1,items:null};
     setWorkspaceStatus(`Menyiapkan cadangan di ${handle.name}…`);
     await waitForGuaranteedLocalSave();
     await saveWorkspaceBackup(true);
@@ -1309,7 +1421,7 @@ async function clearAllStoredData(){
   workspaceDirHandle = null;
   workspaceSyncedPdfIds.clear();
   workspaceSyncedAnalysisIds.clear();
-  workspaceDirtyAnalysisIds.clear();
+  workspaceDirtyAnalysisIds.clear(); workspaceDirtyAnalysisGroups.clear(); analysisGroupCache={group:-1,items:null};
   workspaceDeletedIds.clear();
   workspaceDeletedMedicineIds.clear();
   knownFingerprints.clear();
@@ -1950,13 +2062,20 @@ function closeAllBatchPreviews(exceptEntry){
 }
 
 let analysisConcurrencyCap=3;
-async function processAnalysisChunk(entries,onProgress,onRetry){
-  let cursor=0;
+// Berapa PDF dibaca bersamaan. navigator.deviceMemory tidak pernah melaporkan lebih dari 8,
+// jadi "memori <= 8" tidak boleh dipakai sebagai alasan menurunkan paralel (aturan lama
+// membuat 3 berkas sekaligus mustahil tercapai di laptop mana pun).
+function analysisConcurrencyLimit(largestBytes){
   const hardware=Math.max(1,Number(navigator.hardwareConcurrency)||2);
   const memory=Number(navigator.deviceMemory)||4;
+  if(memory<=2||hardware<=2||largestBytes>=80*1024*1024) return 1;
+  if(memory<=4||hardware<=4||largestBytes>=30*1024*1024) return 2;
+  return 3;
+}
+async function processAnalysisChunk(entries,onProgress,onRetry){
+  let cursor=0;
   const largest=entries.reduce((max,entry)=>Math.max(max,Number(entry.size)||(entry.blob&&entry.blob.size)||0),0);
-  let safeLimit=memory<=4||hardware<=4||largest>=80*1024*1024 ? 1 : (memory<=8||hardware<=8||largest>=30*1024*1024 ? 2 : 3);
-  safeLimit=Math.min(safeLimit,analysisConcurrencyCap);
+  const safeLimit=Math.min(analysisConcurrencyLimit(largest),analysisConcurrencyCap);
   const concurrency=Math.max(1,Math.min(safeLimit,entries.length));
   async function worker(){
     while(cursor<entries.length){
@@ -2540,8 +2659,8 @@ let tesseractRecognitionBarrier = Promise.resolve();
 let autoOcrQueue = [];
 const autoOcrQueuedIds = new Set();
 const autoOcrJobsById = new Map();
-let autoOcrLoopRunning = false;
-let autoOcrActiveEntry = null;
+let autoOcrLanesRunning = 0;
+const autoOcrActiveEntries = new Set();
 let lastAutoOcrRenderAt = 0;
 let autoOcrGeneration = 0;
 function loadScriptOnce(src,integrity){
@@ -2580,10 +2699,43 @@ async function ensureTesseractWorker(){
   }
   return tesseractWorkerPromise;
 }
+/* Mesin OCR. Mesin utama selalu ada; di perangkat yang cukup kuat (>= 8 inti logis dan memori
+   terlapor >= 8 GB) ditambah SATU mesin lagi sehingga dua halaman dibaca bersamaan. Terukur pada
+   halaman scan nyata: 2 mesin ~2x lebih cepat. Bila mesin tambahan gagal dibuat, aplikasi tetap
+   berjalan dengan satu mesin seperti sebelumnya. Tiap mesin memproses satu halaman pada satu waktu. */
+function ocrEngineCount(){
+  const hardware=Math.max(1,Number(navigator.hardwareConcurrency)||2);
+  const memory=Number(navigator.deviceMemory)||4;
+  return (hardware>=8 && memory>=8) ? 2 : 1;
+}
+let ocrEngineSlots=[];        // [{worker, barrier, pending}]
+let ocrExtraEnginesStarted=false;
+function startExtraOcrEngines(){
+  if(ocrExtraEnginesStarted) return;
+  ocrExtraEnginesStarted=true;
+  const extra=ocrEngineCount()-1;
+  for(let i=0;i<extra;i++){
+    (async()=>{
+      try{
+        const worker=await window.Tesseract.createWorker("eng");
+        ocrEngineSlots.push({worker,barrier:Promise.resolve(),pending:0});
+      }catch(err){ console.warn("Mesin OCR tambahan tidak tersedia; lanjut dengan satu mesin.",err); }
+    })();
+  }
+}
 async function recognizeCanvasWithTesseract(canvas){
-  const worker=await ensureTesseractWorker();
-  const job=tesseractRecognitionBarrier.then(()=>worker.recognize(canvas));
-  tesseractRecognitionBarrier=job.catch(()=>{});
+  const primary=await ensureTesseractWorker();
+  if(!ocrEngineSlots.length || ocrEngineSlots[0].worker!==primary){
+    ocrEngineSlots=[{worker:primary,barrier:Promise.resolve(),pending:0}];
+    ocrExtraEnginesStarted=false;
+  }
+  startExtraOcrEngines();
+  const slot=ocrEngineSlots.reduce((best,row)=>(row.pending<best.pending?row:best),ocrEngineSlots[0]);
+  slot.pending++;
+  const job=slot.barrier.then(()=>slot.worker.recognize(canvas));
+  slot.barrier=job.catch(()=>{});
+  const release=()=>{ slot.pending=Math.max(0,slot.pending-1); };
+  job.then(release,release);
   return job;
 }
 function ocrCandidatePages(entry){
@@ -2618,8 +2770,10 @@ function updateAutoOcrStatus(){
   const el=document.getElementById("autoOcrStatus");
   if(!el) return;
   const waiting=autoOcrQueue.length;
-  if(autoOcrActiveEntry){
-    el.textContent=`${autoOcrActiveEntry.ocr.progress||"OCR sedang berjalan"}${waiting?` • ${waiting} berkas menunggu`:""}`;
+  if(autoOcrActiveEntries.size){
+    const first=autoOcrActiveEntries.values().next().value;
+    const others=autoOcrActiveEntries.size-1;
+    el.textContent=`${(first.ocr&&first.ocr.progress)||"OCR sedang berjalan"}${others?` (+${others} berkas lain bersamaan)`:""}${waiting?` • ${waiting} berkas menunggu`:""}`;
   }else if(!autoOcrEnabled){
     el.textContent=`OCR otomatis dijeda${waiting?` • ${waiting} berkas menunggu`:""}.`;
   }else if(waiting){
@@ -2650,7 +2804,7 @@ function enqueueAutoOcr(entry,options){
       const existingIndex=autoOcrQueue.indexOf(job);
       if(existingIndex>0){ autoOcrQueue.splice(existingIndex,1); autoOcrQueue.unshift(job); }
     }
-  }else if(entry!==autoOcrActiveEntry){
+  }else if(!autoOcrActiveEntries.has(entry)){
     const newJob={entry,force:!!options.force,renderFn:options.renderFn||renderResults,evalFn:options.evalFn||evaluateFile,generation:autoOcrGeneration,persistActive:options.persistActive!==false};
     if(options.front) autoOcrQueue.unshift(newJob); else autoOcrQueue.push(newJob);
     autoOcrQueuedIds.add(entry.id);
@@ -2692,29 +2846,42 @@ async function releaseOcrResources(entry){
   if(entry.objectUrl){ try{ URL.revokeObjectURL(entry.objectUrl); }catch(e){} entry.objectUrl=""; }
   releaseEntryHeavyData(entry);
 }
-async function processAutoOcrQueue(){
-  if(autoOcrLoopRunning) return;
-  autoOcrLoopRunning=true;
-  try{
-    while(autoOcrQueue.length){
-      const next=autoOcrQueue[0];
-      if(!autoOcrEnabled&&!next.force) break;
-      const job=autoOcrQueue.shift();
-      autoOcrQueuedIds.delete(job.entry.id);
-      autoOcrJobsById.delete(job.entry.id);
-      if(job.entry.ocr&&job.entry.ocr.done) continue;
-      autoOcrActiveEntry=job.entry;
+// Antrean OCR dikerjakan oleh beberapa "jalur" (sebanyak mesin OCR). Tiap jalur mengambil satu
+// berkas dari antrean, menyelesaikannya, lalu mengambil berikutnya. Satu berkas tidak pernah
+// dikerjakan dua jalur sekaligus (dijaga oleh autoOcrActiveEntries).
+function processAutoOcrQueue(){
+  const maxLanes=ocrEngineCount();
+  while(autoOcrLanesRunning<maxLanes && autoOcrQueue.length && (autoOcrEnabled||autoOcrQueue[0].force)){
+    autoOcrLanesRunning++;
+    const before=autoOcrQueue.length;
+    runAutoOcrLane().catch(err=>console.warn("Jalur OCR berhenti karena galat:",err)).then(()=>{
+      autoOcrLanesRunning=Math.max(0,autoOcrLanesRunning-1);
       updateAutoOcrStatus();
+      // Bila antrean terisi lagi sementara jalur ini berhenti, hidupkan kembali.
+      if(autoOcrQueue.length) setTimeout(processAutoOcrQueue,40);
+    });
+    if(autoOcrQueue.length===before) break; // jalur tidak mengambil pekerjaan; jangan berputar tanpa henti
+  }
+}
+async function runAutoOcrLane(){
+  while(autoOcrQueue.length){
+    const next=autoOcrQueue[0];
+    if(!autoOcrEnabled&&!next.force) break;
+    const job=autoOcrQueue.shift();
+    autoOcrQueuedIds.delete(job.entry.id);
+    autoOcrJobsById.delete(job.entry.id);
+    if(job.entry.ocr&&job.entry.ocr.done) continue;
+    if(autoOcrActiveEntries.has(job.entry)) continue;
+    autoOcrActiveEntries.add(job.entry);
+    updateAutoOcrStatus();
+    try{
       await runOcr(job.entry,()=>renderAutoOcrProgress(false),job.evalFn,{automatic:!job.force,generation:job.generation,persistActive:job.persistActive});
       await releaseOcrResources(job.entry);
-      renderAutoOcrProgress(true);
-      autoOcrActiveEntry=null;
-      await yieldToBrowser();
+    }finally{
+      autoOcrActiveEntries.delete(job.entry);
     }
-  }finally{
-    autoOcrActiveEntry=null;
-    autoOcrLoopRunning=false;
-    updateAutoOcrStatus();
+    renderAutoOcrProgress(true);
+    await yieldToBrowser();
   }
 }
 async function persistOcrCheckpoint(entry,options){
@@ -2727,7 +2894,7 @@ async function persistOcrCheckpoint(entry,options){
     await dbWriteAnalysisEntries([entry]);
     if(persistActive) await dbWriteActiveEntries([entry],false);
     else await dbPut(DB_STORE,DB_KEY,buildSnapshot());
-    if(workspaceDirHandle){ workspaceDirtyAnalysisIds.add(entry.id); scheduleWorkspaceBackup(); }
+    if(workspaceDirHandle){ workspaceDirtyAnalysisIds.add(entry.id); scheduleWorkspaceBackupLazy(45000); }
     updateSaveIndicator(true);
   }catch(err){
     if(persistActive){ dirtyAnalysisIds.add(entry.id); dirtyActiveIds.add(entry.id); }
@@ -2832,8 +2999,12 @@ async function ensureAnalysisData(entry){
   let row=await dbGet(DB_ANALYSIS_STORE,entry.id);
   if(!row && entry.externalAnalysisStored && workspaceDirHandle){
     try{
-      const blob=await readWorkspaceBlob("analysis",`${workspaceFileName(entry.id)}.json`);
-      row=JSON.parse(await blob.text());
+      if(entry.externalAnalysisGroup!=null) row=await readAnalysisFromGroup(entry);
+      if(!row){
+        // Format cadangan lama: satu file per berkas.
+        const blob=await readWorkspaceBlob("analysis",`${workspaceFileName(entry.id)}.json`);
+        row=JSON.parse(await blob.text());
+      }
     }catch(err){ console.warn("Analisis cadangan tidak dapat dimuat:",err); }
   }
   entry.digitalText=(row&&row.digitalText)||"";
@@ -3411,6 +3582,7 @@ async function archiveFiles(entriesToArchive){
     workspaceSyncedAnalysisIds.delete(entry.id);
     workspaceSyncedPdfIds.delete(`active:${entry.id}`);
     workspaceDeletedIds.add(entry.id);
+    if(entry.externalAnalysisGroup!=null) workspaceDirtyAnalysisGroups.add(entry.externalAnalysisGroup);
     activeFingerprints.delete(entry.fingerprint);
     if(entry.fingerprint){ archivedFingerprints.add(entry.fingerprint); knownFingerprints.add(entry.fingerprint); }
     if(entry.objectUrl){ try{ URL.revokeObjectURL(entry.objectUrl); }catch(e){} }
