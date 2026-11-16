@@ -1,0 +1,2 @@
+# Pustaka pihak ketiga disimpan apa adanya (tanpa konversi akhir baris).
+vendor/** -text

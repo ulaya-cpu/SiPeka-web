@@ -1,0 +1,5 @@
+{
+  "dataset": "manambai-rj-500",
+  "pdfDir": "D:\\contoh\\folder-berisi-pdf-klaim",
+  "scanFiles": ["nama-berkas-yang-punya-halaman-scan-1.pdf", "nama-berkas-yang-punya-halaman-scan-2.pdf"]
+}

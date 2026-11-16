@@ -29,7 +29,14 @@ window.addEventListener("unhandledrejection", e=>{
   showGlobalErrorToast((e.reason&&e.reason.message)||String(e.reason||"kesalahan tak dikenal"));
 });
 
-const PDFJS_PRIMARY_WORKER = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+/* Versi aplikasi. Naikkan setiap kali ada perubahan yang dirilis; nilai ini tampil di layar dan
+   ikut tertulis di laporan Excel/CSV agar hasil pemeriksaan bisa ditelusuri ke versinya. */
+const SIPEKA_VERSION = "1.4.0";
+const SIPEKA_VERSION_DATE = "2026-11-15";
+
+// Pustaka PDF disertakan di dalam aplikasi (folder vendor/) agar tidak bergantung pada internet.
+// CDN di bawah hanya cadangan bila berkas lokal gagal dimuat.
+const PDFJS_PRIMARY_WORKER = "./vendor/pdf.worker.min.js";
 const PDFJS_FALLBACK_SCRIPT = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js";
 const PDFJS_FALLBACK_WORKER = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
 const JSZIP_FALLBACK_SCRIPT = "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js";
@@ -79,6 +86,10 @@ async function ensureZipEngine(){
   return zipEnginePromise;
 }
 if(window.pdfjsLib) configurePdfEngine(PDFJS_PRIMARY_WORKER);
+(function showAppVersion(){
+  const el=document.getElementById("appVersion");
+  if(el) el.textContent=`v${SIPEKA_VERSION} (${SIPEKA_VERSION_DATE})`;
+})();
 
 /* ================= PENYIMPANAN OTOMATIS (IndexedDB) =================
    Checklist, daftar pasien, status centang, dan PDF disimpan otomatis sebagai
@@ -2686,18 +2697,42 @@ function loadScriptOnce(src,integrity){
 async function ensureTesseractWorker(){
   if(!tesseractWorkerPromise){
     tesseractWorkerPromise = (async ()=>{
-      const TESS_SRC="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.4/dist/tesseract.min.js";
+      // Mesin OCR disertakan di dalam aplikasi (folder vendor/), sehingga OCR tetap berjalan
+      // tanpa internet. CDN hanya dipakai sebagai cadangan bila berkas lokal gagal dimuat.
+      const TESS_CDN="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.4/dist/tesseract.min.js";
       const TESS_SRI="sha384-Ptw8HCYAWF6vIop6WuGxfSCiDCIzUWqjrHYfx8Vd0S4CMBaicAdBh2y+Ufle664A";
       try{
-        await loadScriptOnce(TESS_SRC,TESS_SRI);
-      }catch(primaryError){
-        await loadScriptOnce(TESS_SRC,TESS_SRI);
+        await loadScriptOnce(vendorUrl("tesseract.min.js"));
+      }catch(localError){
+        await loadScriptOnce(TESS_CDN,TESS_SRI);
       }
       if(!window.Tesseract) throw new Error("Mesin OCR gagal diinisialisasi.");
-      return await window.Tesseract.createWorker("eng");
+      return await createOcrWorker();
     })().catch(err=>{ tesseractWorkerPromise=null; throw err; });
   }
   return tesseractWorkerPromise;
+}
+// Alamat mutlak sebuah berkas di folder vendor/ (worker OCR membutuhkan alamat mutlak).
+function vendorUrl(relativePath){
+  return new URL(`./vendor/${relativePath}`,document.baseURI).href;
+}
+let ocrLocalAssetsFailed=false;
+// Membuat satu mesin OCR: pertama dari berkas lokal; bila gagal, dari CDN (perilaku lama).
+async function createOcrWorker(){
+  if(!ocrLocalAssetsFailed){
+    try{
+      return await window.Tesseract.createWorker("eng",1,{
+        workerPath:vendorUrl("tesseract-core/worker.min.js"),
+        corePath:vendorUrl("tesseract-core"),
+        langPath:vendorUrl("tessdata"),
+        gzip:true
+      });
+    }catch(err){
+      ocrLocalAssetsFailed=true;
+      console.warn("Mesin OCR lokal gagal dimuat; mencoba dari jaringan.",err);
+    }
+  }
+  return await window.Tesseract.createWorker("eng");
 }
 /* Mesin OCR. Mesin utama selalu ada; di perangkat yang cukup kuat (>= 8 inti logis dan memori
    terlapor >= 8 GB) ditambah SATU mesin lagi sehingga dua halaman dibaca bersamaan. Terukur pada
@@ -2717,7 +2752,7 @@ function startExtraOcrEngines(){
   for(let i=0;i<extra;i++){
     (async()=>{
       try{
-        const worker=await window.Tesseract.createWorker("eng");
+        const worker=await createOcrWorker();
         ocrEngineSlots.push({worker,barrier:Promise.resolve(),pending:0});
       }catch(err){ console.warn("Mesin OCR tambahan tidak tersedia; lanjut dengan satu mesin.",err); }
     })();
@@ -4193,7 +4228,7 @@ async function buildVerificationWorkbook(rows,ZipEngine){
     `<sheetFormatPr defaultRowHeight="15"/>`,
     `<cols><col min="1" max="1" width="6" customWidth="1"/><col min="2" max="2" width="25" customWidth="1"/><col min="3" max="3" width="14" customWidth="1"/><col min="4" max="4" width="14" customWidth="1"/><col min="5" max="5" width="52" customWidth="1"/><col min="6" max="6" width="52" customWidth="1"/><col min="7" max="7" width="40" customWidth="1"/></cols><sheetData>`,
     `<row r="1" ht="24" customHeight="1">${cell("A1","Hasil Verifikasi Kelengkapan Berkas Klaim",1)}</row>`,
-    `<row r="2">${cell("A2",`SIPEKA Klaim • BPJS Kesehatan • Diunduh ${stamp} • ${rows.length} berkas: ${counts.Lengkap} lengkap, ${counts.Kurang} kurang, ${counts["Gagal Baca"]} gagal baca`,2)}</row>`,
+    `<row r="2">${cell("A2",`SIPEKA Klaim v${SIPEKA_VERSION} • BPJS Kesehatan • Diunduh ${stamp} • ${rows.length} berkas: ${counts.Lengkap} lengkap, ${counts.Kurang} kurang, ${counts["Gagal Baca"]} gagal baca`,2)}</row>`,
     `<row r="3" ht="6" customHeight="1"/>`,
     `<row r="4" ht="22" customHeight="1">${["No","SEP","No. RM","Keterangan","Rincian Berkas Kurang / Catatan","Peringatan Identitas (RM/SEP/Kartu)","Nama File"].map((h,i)=>cell(String.fromCharCode(65+i)+"4",h,3)).join("")}</row>`];
   for(let i=0;i<rows.length;i++){
@@ -4321,7 +4356,7 @@ document.getElementById("exportBtn").onclick = async ()=>{
 
   const csvDuplicateSeps=findDuplicateSeps();
   function buildCsvForCategory(catKey, resultRows){
-    const rows = [["No Urut","ID Hasil","Nama File","Kategori","Status Keseluruhan File","Jumlah Dokumen Kurang","Jenis Baris","Rincian Dokumen Kurang","Waktu Disimpan","Posisi Data","No. RM"]];
+    const rows = [["No Urut","ID Hasil","Nama File","Kategori","Status Keseluruhan File","Jumlah Dokumen Kurang","Jenis Baris","Rincian Dokumen Kurang","Waktu Disimpan","Posisi Data","No. RM","Versi Aplikasi"]];
     resultRows.forEach((row,idx)=>{
       const catLabel = row.categoryLabel || (categories[catKey]||{}).label || catKey;
       const missing = row.missingNames||[];
@@ -4334,7 +4369,7 @@ document.getElementById("exportBtn").onclick = async ()=>{
         noUrut, row.id, row.name, catLabel, fileStatus, missing.length,
         "Ringkasan Berkas",
         missing.length?missing.join("; "):"-",
-        completedAt, row.stored?"Hasil tersimpan":"Antrean aktif", row.rm||""
+        completedAt, row.stored?"Hasil tersimpan":"Antrean aktif", row.rm||"", SIPEKA_VERSION
       ]);
       // Baris rincian: satu baris tersendiri untuk SETIAP dokumen yang kurang, agar tidak pernah terpotong/tersembunyi
       missing.forEach((docName,mIdx)=>{
@@ -4342,7 +4377,7 @@ document.getElementById("exportBtn").onclick = async ()=>{
           noUrut, row.id, row.name, catLabel, fileStatus, missing.length,
           `Dokumen Kurang ${mIdx+1} dari ${missing.length}`,
           docName,
-          completedAt, row.stored?"Hasil tersimpan":"Antrean aktif", row.rm||""
+          completedAt, row.stored?"Hasil tersimpan":"Antrean aktif", row.rm||"", SIPEKA_VERSION
         ]);
       });
       // Peringatan identitas (No. RM/SEP/kartu tidak konsisten, SEP ganda) - tidak mengubah status berkas
@@ -4353,7 +4388,7 @@ document.getElementById("exportBtn").onclick = async ()=>{
           noUrut, row.id, row.name, catLabel, fileStatus, missing.length,
           `Peringatan Identitas ${iIdx+1} dari ${identityRows.length}`,
           text,
-          completedAt, row.stored?"Hasil tersimpan":"Antrean aktif", row.rm||""
+          completedAt, row.stored?"Hasil tersimpan":"Antrean aktif", row.rm||"", SIPEKA_VERSION
         ]);
       });
       // Catatan: dokumen kondisional yang tidak ditemukan (tidak mengubah status berkas)
@@ -4362,7 +4397,7 @@ document.getElementById("exportBtn").onclick = async ()=>{
           noUrut, row.id, row.name, catLabel, fileStatus, missing.length,
           `Catatan Kondisional ${nIdx+1} dari ${notes.length}`,
           docName,
-          completedAt, row.stored?"Hasil tersimpan":"Antrean aktif", row.rm||""
+          completedAt, row.stored?"Hasil tersimpan":"Antrean aktif", row.rm||"", SIPEKA_VERSION
         ]);
       });
     });

@@ -1,0 +1,24 @@
+{
+  "manambai-rj-500": {
+    "keterangan": "500 berkas rawat jalan pertama (urut nama) dari satu faskes. Hanya angka hasil; tidak ada data pasien di repo.",
+    "n": 500,
+    "harus": {
+      "files": 500,
+      "pending": 0,
+      "failed": 0,
+      "complete": 498,
+      "incomplete": 2,
+      "identityWarnFiles": 18,
+      "rmMismatchFiles": 14,
+      "duplicateSepFiles": 4,
+      "noRmFiles": 0,
+      "icdWarnFiles": 50,
+      "scanFiles": 44,
+      "ocrDone": 44,
+      "ocrErrors": 0,
+      "blobsInBrowser": 0,
+      "analysisInBrowser": 500,
+      "excelRows": 500
+    }
+  }
+}

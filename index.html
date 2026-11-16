@@ -28,7 +28,7 @@
 <title>SIPEKA Klaim — Sistem Pemeriksaan Kelengkapan Administrasi Klaim</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="./styles.css">
+<link rel="stylesheet" href="./styles.css?v=1.4.0">
 </head>
 <body>
 <div class="app">
@@ -41,7 +41,7 @@
       <div>
         <div class="brand-eyebrow">Sistem Pemeriksaan Kelengkapan Administrasi Klaim &mdash; BPJS Kesehatan</div>
         <h1>SIPEKA Klaim</h1>
-        <div class="tagline">&ldquo;Screening lebih cepat, pemeriksaan lebih cermat.&rdquo;</div>
+        <div class="tagline">&ldquo;Screening lebih cepat, pemeriksaan lebih cermat.&rdquo; <span id="appVersion" title="Versi aplikasi"></span></div>
       </div>
     </div>
     <div class="summary-strip" id="summaryStrip">
@@ -259,8 +259,10 @@
 
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js" integrity="sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" integrity="sha384-+mbV2IY1Zk/X1p/nWllGySJSUN8uMs+gUAN10Or95UBH0fpj6GfKgPmgC5EXieXG" crossorigin="anonymous"></script>
-<script src="./app.js"></script>
+<!-- Pustaka disertakan di folder vendor/ supaya aplikasi tidak bergantung pada internet.
+     Bila berkas lokal gagal dimuat, app.js memuat cadangannya dari CDN. -->
+<script src="./vendor/pdf.min.js"></script>
+<script src="./vendor/jszip.min.js"></script>
+<script src="./app.js?v=1.4.0"></script>
 </body>
 </html>
