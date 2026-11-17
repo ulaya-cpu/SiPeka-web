@@ -59,6 +59,10 @@ else{
       $k = Jalankan 'uji/ocr-bersamaan.js' "n=$jumlah2&batas=700" ($scan | Select-Object -First $jumlah2) 900 -luring
       $ok = (Bersih $k) -and $k.drained -and ($k.teksRusak -eq 0) -and ($k.tidakKonsisten -eq 0) -and ($k.ocrErrors -eq 0) -and ($k.failed -eq 0) -and ($k.files -eq $jumlah2)
       Catat 'OCR tidak merusak teks tersimpan maupun status' $ok $(if($ok){"$($k.files) berkas, $($k.ocrDone) di-OCR, 0 teks rusak, 0 status tidak konsisten"}else{ (Masalah $k) + " rusak=$($k.teksRusak) tidakKonsisten=$($k.tidakKonsisten) galatOcr=$($k.ocrErrors) $(@($k.contohRusak)+@($k.contohTidakKonsisten) -join ' || ')" })
+      Write-Host "== 7. OCR setelah browser dibuka ulang: 12 berkas, tanpa internet =="
+      $u = Jalankan 'uji/ocr-buka-ulang.js' 'n=12&batas=500' ($scan | Select-Object -First 12) 700 -luring
+      $ok = (Bersih $u) -and (@($u.gagal).Count -eq 0) -and ($u.total -gt 0)
+      Catat 'OCR menunggu PDF dipasang, lalu tuntas tanpa galat' $ok $(if($ok){"$($u.lulus) dari $($u.total) pemeriksaan"}else{ (Masalah $u) + ' ' + (@($u.gagal) -join ' || ') })
     }else{ Write-Host "(scanFiles di lokal.json kurang dari 10 berkas: uji OCR dilewati)" }
   }
 }

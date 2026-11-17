@@ -31,8 +31,8 @@ window.addEventListener("unhandledrejection", e=>{
 
 /* Versi aplikasi. Naikkan setiap kali ada perubahan yang dirilis; nilai ini tampil di layar dan
    ikut tertulis di laporan Excel/CSV agar hasil pemeriksaan bisa ditelusuri ke versinya. */
-const SIPEKA_VERSION = "1.4.1";
-const SIPEKA_VERSION_DATE = "2026-11-16";
+const SIPEKA_VERSION = "1.4.2";
+const SIPEKA_VERSION_DATE = "2026-11-17";
 
 // Pustaka PDF disertakan di dalam aplikasi (folder vendor/) agar tidak bergantung pada internet.
 // CDN di bawah hanya cadangan bila berkas lokal gagal dimuat.
@@ -619,6 +619,9 @@ function rebuildEntry(stored){
     // Hasil tetap utuh; PDF asal perlu dipilih ulang untuk pratinjau/OCR/baca ulang.
     entry.objectUrl="";
     entry.sourceMissing=true;
+    // Versi lama mencatat "gagal" saat OCR dicoba tanpa PDF. Itu bukan kegagalan OCR; hapus
+    // catatannya supaya OCR dijadwalkan lagi begitu PDF dipasang.
+    if(entry.ocr.error && /Gagal memuat ulang berkas untuk OCR/.test(entry.ocr.error)) entry.ocr.error=null;
   }else{
     entry.objectUrl = "";
     entry.error = entry.error || "Berkas asli tidak tersimpan.";
@@ -2758,20 +2761,50 @@ function startExtraOcrEngines(){
     })();
   }
 }
+// Mengenali satu halaman. Bila mesin yang dipakai gagal (mis. kehabisan memori lalu mati),
+// mesin itu dipensiunkan dan halaman yang sama dicoba SEKALI lagi di mesin lain, sehingga satu
+// mesin yang mati tidak membuat halaman dicatat gagal.
 async function recognizeCanvasWithTesseract(canvas){
-  const primary=await ensureTesseractWorker();
-  if(!ocrEngineSlots.length || ocrEngineSlots[0].worker!==primary){
-    ocrEngineSlots=[{worker:primary,barrier:Promise.resolve(),pending:0}];
-    ocrExtraEnginesStarted=false;
+  let lastError=null;
+  for(let attempt=0;attempt<2;attempt++){
+    const primary=await ensureTesseractWorker();
+    if(!ocrEngineSlots.length || ocrEngineSlots[0].worker!==primary){
+      ocrEngineSlots=[{worker:primary,barrier:Promise.resolve(),pending:0}];
+      ocrExtraEnginesStarted=false;
+    }
+    startExtraOcrEngines();
+    const slot=ocrEngineSlots.reduce((best,row)=>(row.pending<best.pending?row:best),ocrEngineSlots[0]);
+    slot.pending++;
+    const job=slot.barrier.then(()=>slot.worker.recognize(canvas));
+    slot.barrier=job.catch(()=>{});
+    try{
+      const result=await job;
+      slot.pending=Math.max(0,slot.pending-1);
+      return result;
+    }catch(err){
+      slot.pending=Math.max(0,slot.pending-1);
+      lastError=err;
+      retireOcrEngine(slot,err);
+    }
   }
-  startExtraOcrEngines();
-  const slot=ocrEngineSlots.reduce((best,row)=>(row.pending<best.pending?row:best),ocrEngineSlots[0]);
-  slot.pending++;
-  const job=slot.barrier.then(()=>slot.worker.recognize(canvas));
-  slot.barrier=job.catch(()=>{});
-  const release=()=>{ slot.pending=Math.max(0,slot.pending-1); };
-  job.then(release,release);
-  return job;
+  throw lastError;
+}
+function retireOcrEngine(slot,err){
+  const index=ocrEngineSlots.indexOf(slot);
+  if(index<0) return; // sudah dipensiunkan oleh halaman lain
+  console.warn(`Mesin OCR ${index===0?"utama":"tambahan"} bermasalah dan diganti:`,err);
+  if(index===0){
+    // Mesin utama: buat ulang dari awal pada pemakaian berikutnya (mesin tambahan ikut dibuat ulang).
+    const all=ocrEngineSlots.slice();
+    ocrEngineSlots=[];
+    ocrExtraEnginesStarted=false;
+    tesseractWorkerPromise=null;
+    all.forEach(row=>{ try{ row.worker.terminate(); }catch(e){} });
+  }else{
+    // Mesin tambahan: dilepas dan TIDAK dibuat lagi; lanjut dengan mesin yang tersisa.
+    ocrEngineSlots.splice(index,1);
+    try{ slot.worker.terminate(); }catch(e){}
+  }
 }
 function ocrCandidatePages(entry){
   if(Array.isArray(entry.ocrCandidates)) return entry.ocrCandidates.slice();
@@ -2813,6 +2846,8 @@ function updateAutoOcrStatus(){
     el.textContent=`OCR otomatis dijeda${waiting?` • ${waiting} berkas menunggu`:""}.`;
   }else if(waiting){
     el.textContent=`${waiting} berkas menunggu OCR otomatis.`;
+  }else if(ocrAwaitingPdfCount){
+    el.textContent=`${ocrAwaitingPdfCount} berkas menunggu PDF dipilih ulang sebelum OCR dapat berjalan. Pilih/unggah ulang berkas yang sama; OCR akan berjalan sendiri.`;
   }else{
     el.textContent="OCR otomatis siap.";
   }
@@ -2825,9 +2860,24 @@ function renderAutoOcrProgress(force){
     if(activeView==="batch") renderBatches(); else renderResults();
   }
 }
+// Berkas "baca langsung" yang PDF-nya belum dipilih ulang (mis. setelah browser dibuka ulang).
+function entryAwaitsSourcePdf(entry){
+  return !!(entry && entry.sourceOnly && !entry.blob);
+}
+// Berapa berkas yang OCR-nya tertunda hanya karena PDF-nya belum terpasang.
+function countOcrAwaitingPdf(){
+  let count=0;
+  const check=entry=>{ if(entryAwaitsSourcePdf(entry) && !entry.pending && !entry.error && !(entry.ocr&&entry.ocr.done) && ocrCandidatePages(entry).length) count++; };
+  files.forEach(check);
+  return count;
+}
+let ocrAwaitingPdfCount=0; // diperbarui di renderResults
 function enqueueAutoOcr(entry,options){
   options=options||{};
   if(!autoOcrEnabled&&!options.force) return false;
+  // PDF belum terpasang: OCR tidak mungkin berjalan. Jangan dicoba (dan jangan dicatat sebagai
+  // gagal); OCR dijadwalkan otomatis begitu berkas yang sama dipilih ulang.
+  if(entryAwaitsSourcePdf(entry)) return false;
   if(!entry||entry.pending||entry.error||(entry.ocr&&entry.ocr.done)||ocrCandidatePages(entry).length===0) return false;
   const job=autoOcrJobsById.get(entry.id);
   if(job){
@@ -2961,7 +3011,8 @@ async function runOcrGuarded(entry, renderFn, evalFn, options, generation){
       await ensureEntryBlob(entry);
       entry.pdfDoc = await openPdfDocument(entry.blob,entry.name,120000);
     }catch(err){
-      entry.ocr.error = "Gagal memuat ulang berkas untuk OCR.";
+      // PDF belum terpasang bukan kegagalan OCR: biarkan menunggu tanpa mencatat galat.
+      if(!entryAwaitsSourcePdf(entry)) entry.ocr.error = `Gagal memuat ulang berkas untuk OCR: ${(err&&err.message)||err}`;
       renderFn();
       return;
     }
@@ -3804,6 +3855,8 @@ function renderResults(){
   const statusById=new Map();
   const counts={complete:0,incomplete:0,failed:0,processing:0,identity:0};
   duplicateSepSet=findDuplicateSeps();
+  ocrAwaitingPdfCount=countOcrAwaitingPdf();
+  updateAutoOcrStatus();
   files.forEach(entry=>{
     const st=entryReadStatus(entry);
     statusById.set(entry.id,st);
@@ -3880,7 +3933,9 @@ function renderResults(){
     let ocrHtml = "";
     if(scanPages.length>0){
       let statusLine;
+      const awaitsPdf=entryAwaitsSourcePdf(entry) && !entry.ocr.done;
       if(entry.ocr.running) statusLine = `<span>${escapeAttr(entry.ocr.progress)}</span>`;
+      else if(awaitsPdf) statusLine = `<span class="ocr-queued">${scanPages.length} halaman scan menunggu OCR &mdash; pilih/unggah ulang berkas PDF yang sama, OCR akan berjalan sendiri.</span>`;
       else if(entry.ocr.error) statusLine = `<span class="ocr-error">${escapeAttr(entry.ocr.error)}</span>`;
       else if(entry.ocr.done) statusLine = `<span class="ocr-done">OCR otomatis selesai &mdash; komponen yang cocok sudah ditandai.</span>`;
       else if(queued) statusLine = `<span class="ocr-queued">Menunggu giliran OCR otomatis &mdash; ${entry.ocr.processedPages.length}/${scanPages.length} halaman sudah dibaca.</span>`;
@@ -3890,7 +3945,7 @@ function renderResults(){
       <div class="ocr-box">
         <div class="ocr-row">
           ${statusLine}
-          <button class="ocr-btn" data-ocr="${entry.id}" ${entry.ocr.running||entry.ocr.done ? "disabled":""}>${buttonText}</button>
+          <button class="ocr-btn" data-ocr="${entry.id}" ${entry.ocr.running||entry.ocr.done||awaitsPdf ? "disabled":""}>${awaitsPdf?"Menunggu PDF":buttonText}</button>
         </div>
         <div class="ocr-note">OCR berjalan satu berkas pada satu waktu dan progres disimpan setiap tiga halaman. Teks cetak yang jelas ditandai otomatis; tulisan tangan atau hasil yang tidak terbaca tetap perlu ditinjau.</div>
       </div>`;

@@ -4,12 +4,14 @@ param(
   [int]$TimeoutSec=420,
   [int]$Port=8765,
   [string[]]$Pdfs=@(),
-  [switch]$Offline
+  [switch]$Offline,
+  [switch]$GzSebagaiEncoding
 )
 # Laboratorium uji SIPEKA.
 # Melayani aplikasi lewat http://localhost (sama seperti di situs: worker PDF asli, jam nyata),
 # menyajikan PDF uji, menjalankan Edge tanpa tampilan, lalu menunggu halaman mengirim hasil ke /result.
 # Keluaran: satu baris JSON hasil uji, atau teks "TIDAK ADA HASIL ..." bila waktu habis.
+$script:GzEnc=[bool]$GzSebagaiEncoding
 $here=$PSScriptRoot
 $appDir=Split-Path $here -Parent
 $work=Join-Path $env:TEMP 'sipeka-uji'
@@ -27,6 +29,8 @@ function Send-Bytes($ctx,[byte[]]$bytes,[string]$type,[int]$code=200){
     $ctx.Response.StatusCode=$code
     if($type){ $ctx.Response.ContentType=$type }
     $ctx.Response.Headers['Cache-Control']='no-store'
+    # Meniru hosting yang menandai berkas .gz sebagai "Content-Encoding: gzip" (browser lalu membukanya otomatis).
+    if($script:GzEnc -and $type -eq 'application/gzip'){ $ctx.Response.Headers['Content-Encoding']='gzip' }
     $ctx.Response.ContentLength64=$bytes.Length
     $ctx.Response.OutputStream.Write($bytes,0,$bytes.Length)
     $ctx.Response.OutputStream.Close()

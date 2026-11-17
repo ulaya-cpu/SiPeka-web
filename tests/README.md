@@ -18,8 +18,9 @@ Hasil akhir `RINGKASAN: semua ... uji LULUS` berarti boleh dirilis. Bila ada `GA
 | 4 | Folder Cadangan | PDF klaim asli (lokal) | Tidak ada PDF disalin, analisis berkelompok, pemulihan sesi, arsip |
 | 5 | OCR | Berkas ber-halaman scan (lokal), tanpa internet | Mesin OCR lokal, teks dua jalur identik dengan satu jalur |
 | 6 | OCR bersamaan | Berkas ber-halaman scan (lokal), tanpa internet | OCR yang berjalan selama pembacaan tidak merusak teks tersimpan maupun status |
+| 7 | OCR setelah buka ulang | Berkas ber-halaman scan (lokal), tanpa internet | OCR tidak dicatat gagal saat PDF belum terpasang, dan tuntas setelah PDF dipilih ulang |
 
-Uji 1 dan 2 selalu jalan. Uji 3 sampai 6 hanya jalan bila `tests\lokal.json` ada.
+Uji 1 dan 2 selalu jalan. Uji 3 sampai 7 hanya jalan bila `tests\lokal.json` ada.
 
 ## Data pasien tidak boleh masuk repo
 

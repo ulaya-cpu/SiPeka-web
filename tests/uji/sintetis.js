@@ -126,6 +126,21 @@
     cek("OCR tidak menghapus teks hasil baca yang tersimpan", tersimpan.digitalText.length === barisSebelum && baris.length === tersimpan.pageTexts.length, [tersimpan.digitalText.length, barisSebelum, baris.length, tersimpan.pageTexts.length]);
     cek("OCR tidak mengubah berkas lengkap menjadi tidak lengkap", kurang(e7) === kurangSebelumOcr, [kurang(e7), kurangSebelumOcr]);
 
+    // Mesin OCR yang mati di tengah jalan tidak boleh membuat halaman gagal: halaman diulang di mesin lain.
+    var kanvas = document.createElement("canvas"); kanvas.width = 300; kanvas.height = 120;
+    var ktx = kanvas.getContext("2d"); ktx.fillStyle = "#fff"; ktx.fillRect(0, 0, 300, 120); ktx.fillStyle = "#000"; ktx.font = "40px Arial"; ktx.fillText("UJI 12345", 20, 75);
+    var mesinPalsu = { worker: { recognize: function () { return Promise.reject(new Error("mesin tambahan mati")); }, terminate: function () { mesinPalsu.dimatikan = true; } }, barrier: Promise.resolve(), pending: -1 };
+    await ensureTesseractWorker(); await recognizeCanvasWithTesseract(kanvas); // pastikan mesin utama terdaftar
+    ocrEngineSlots.push(mesinPalsu);
+    var hasilTambahan = null, galatTambahan = null;
+    try { hasilTambahan = await recognizeCanvasWithTesseract(kanvas); } catch (err) { galatTambahan = String(err && err.message || err); }
+    cek("mesin OCR tambahan mati -> halaman tetap terbaca di mesin lain", !!hasilTambahan && /12345/.test(hasilTambahan.data.text) && ocrEngineSlots.indexOf(mesinPalsu) < 0 && mesinPalsu.dimatikan === true, [galatTambahan, hasilTambahan && hasilTambahan.data.text]);
+    var utama = ocrEngineSlots[0].worker;
+    utama.recognize = function () { return Promise.reject(new Error("mesin utama mati")); };
+    var hasilUtama = null, galatUtama = null;
+    try { hasilUtama = await recognizeCanvasWithTesseract(kanvas); } catch (err) { galatUtama = String(err && err.message || err); }
+    cek("mesin OCR utama mati -> dibuat ulang dan halaman tetap terbaca", !!hasilUtama && /12345/.test(hasilUtama.data.text) && ocrEngineSlots[0].worker !== utama, [galatUtama, hasilUtama && hasilUtama.data.text]);
+
     // unggah ulang berkas yang sama -> dilewati, bukan digandakan
     var ulang = await processFilesBatch([unggahan[0], unggahan[1]]);
     cek("unggah ulang berkas yang sama dilewati", ulang.added === 0 && ulang.skipped === 2 && files.length === 11, ulang);
