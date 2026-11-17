@@ -31,8 +31,8 @@ window.addEventListener("unhandledrejection", e=>{
 
 /* Versi aplikasi. Naikkan setiap kali ada perubahan yang dirilis; nilai ini tampil di layar dan
    ikut tertulis di laporan Excel/CSV agar hasil pemeriksaan bisa ditelusuri ke versinya. */
-const SIPEKA_VERSION = "1.4.0";
-const SIPEKA_VERSION_DATE = "2026-11-15";
+const SIPEKA_VERSION = "1.4.1";
+const SIPEKA_VERSION_DATE = "2026-11-16";
 
 // Pustaka PDF disertakan di dalam aplikasi (folder vendor/) agar tidak bergantung pada internet.
 // CDN di bawah hanya cadangan bila berkas lokal gagal dimuat.
@@ -2032,7 +2032,7 @@ async function retryActiveEntryAnalysis(entry){
 
 function releaseEntryHeavyData(entry){
   if((entry.blobStored||entry.externalStored) && entry.blob && !entry.objectUrl) entry.blob=null;
-  if((entry.analysisStored||entry.externalAnalysisStored) && entry._analysisLoaded && !entry.open && !(entry.ocr&&entry.ocr.running)){
+  if((entry.analysisStored||entry.externalAnalysisStored) && entry._analysisLoaded && !entry.open && !entry._ocrBusy && !(entry.ocr&&entry.ocr.running)){
     entry.digitalText="";
     entry.ocrText="";
     entry.ocrPageTexts={};
@@ -2922,11 +2922,13 @@ async function runAutoOcrLane(){
 async function persistOcrCheckpoint(entry,options){
   options=options||{};
   const persistActive=options.persistActive!==false;
-  entry.analysisStored=false;
-  dirtyAnalysisIds.delete(entry.id);
+  // Pengaman lapis kedua: teks analisis hanya ditulis bila memang sedang termuat di memori.
+  // Menulis saat tidak termuat berarti menimpa teks tersimpan dengan teks kosong.
+  const analysisInMemory=!!entry._analysisLoaded;
+  if(analysisInMemory){ entry.analysisStored=false; dirtyAnalysisIds.delete(entry.id); }
   dirtyActiveIds.delete(entry.id);
   try{
-    await dbWriteAnalysisEntries([entry]);
+    if(analysisInMemory) await dbWriteAnalysisEntries([entry]);
     if(persistActive) await dbWriteActiveEntries([entry],false);
     else await dbPut(DB_STORE,DB_KEY,buildSnapshot());
     if(workspaceDirHandle){ workspaceDirtyAnalysisIds.add(entry.id); scheduleWorkspaceBackupLazy(45000); }
@@ -2942,7 +2944,16 @@ async function runOcr(entry, renderFn, evalFn, options){
   evalFn = evalFn || evaluateFile;
   options=options||{};
   const generation=Number.isFinite(options.generation)?options.generation:autoOcrGeneration;
-  if(entry.ocr.running) return;
+  if(entry.ocr.running || entry._ocrBusy) return;
+  // Sejak titik ini sampai OCR berkas ini selesai, data analisisnya TIDAK boleh dilepas dari
+  // memori (lihat releaseEntryHeavyData). Tanpa penanda ini ada celah waktu saat OCR masih
+  // bersiap (memuat PDF) dan ocr.running belum true: bila pada saat itu kelompok pembacaan
+  // selesai dan melepas data, OCR menilai berkas dengan teks kosong lalu menimpa teks tersimpan.
+  entry._ocrBusy=true;
+  try{ return await runOcrGuarded(entry,renderFn,evalFn,options,generation); }
+  finally{ entry._ocrBusy=false; }
+}
+async function runOcrGuarded(entry, renderFn, evalFn, options, generation){
   try{ await ensureAnalysisData(entry); }
   catch(err){ entry.ocr.error="Data analisis berkas tidak dapat dimuat ulang."; renderFn(); return; }
   if(!entry.pdfDoc){
@@ -2993,6 +3004,8 @@ async function runOcr(entry, renderFn, evalFn, options){
         canvas.width=1; canvas.height=1;
       }
       if(generation!==autoOcrGeneration) break;
+      // Pengaman: hasil OCR hanya boleh digabungkan ke data analisis yang utuh di memori.
+      if(!entry._analysisLoaded) await ensureAnalysisData(entry);
       const readText=(result.data.text||"").toLowerCase();
       entry.ocrText += "\n" + readText;
       entry.ocrPageTexts = entry.ocrPageTexts || {};

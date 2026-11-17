@@ -114,6 +114,18 @@
     cek("SEP ganda terdeteksi di kedua berkas", ganda.has(p1.sep) && identityWarnings(e1, ganda).length === 1 && identityWarnings(e1b, ganda).length === 1, Array.from(ganda));
     cek("berkas rusak gagal dibaca tanpa menghentikan yang lain", !!rusak.error && rusak.errorKind === "permanent", [rusak.error, rusak.errorKind]);
 
+    // OCR tidak boleh merusak teks hasil baca maupun status, walaupun data analisis berkas itu
+    // dilepas dari memori tepat ketika OCR sedang bersiap (terjadi saat OCR berjalan bersamaan
+    // dengan pembacaan gelombang besar). Pelepasan dipancing terus-menerus selama OCR berjalan.
+    var kurangSebelumOcr = kurang(e7), barisSebelum = (await dbGet(DB_ANALYSIS_STORE, e7.id)).digitalText.length;
+    releaseEntryHeavyData(e7);
+    var usik = setInterval(function () { releaseEntryHeavyData(e7); }, 1);
+    try { await runOcr(e7, function () { }, evaluateFile, { automatic: false }); } finally { clearInterval(usik); }
+    var tersimpan = await dbGet(DB_ANALYSIS_STORE, e7.id), baris = tersimpan.digitalText.split("\n"); if (baris[baris.length - 1] === "") baris.pop();
+    cek("OCR selesai pada berkas ber-halaman kosong", e7.ocr.done === true && !e7.ocr.error, e7.ocr);
+    cek("OCR tidak menghapus teks hasil baca yang tersimpan", tersimpan.digitalText.length === barisSebelum && baris.length === tersimpan.pageTexts.length, [tersimpan.digitalText.length, barisSebelum, baris.length, tersimpan.pageTexts.length]);
+    cek("OCR tidak mengubah berkas lengkap menjadi tidak lengkap", kurang(e7) === kurangSebelumOcr, [kurang(e7), kurangSebelumOcr]);
+
     // unggah ulang berkas yang sama -> dilewati, bukan digandakan
     var ulang = await processFilesBatch([unggahan[0], unggahan[1]]);
     cek("unggah ulang berkas yang sama dilewati", ulang.added === 0 && ulang.skipped === 2 && files.length === 11, ulang);

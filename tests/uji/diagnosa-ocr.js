@@ -12,11 +12,25 @@ LAB.ready(async function () {
     return p;
   };
   autoOcrEnabled = true;
-  var t0 = performance.now();
-  await processFilesBatch(await LAB.loadPdfs(from, n));
+  var t0 = performance.now(), potong = LAB.num("chunk", 0);
+  if (potong > 0) {
+    // Satu sesi panjang, dimuat per potongan: untuk melihat apakah OCR melambat seiring waktu.
+    out.potongan = []; out.drained = true;
+    for (var awal = from; awal < from + n; awal += potong) {
+      var tp = performance.now(), sebelum = lama.length;
+      await processFilesBatch(await LAB.loadPdfs(awal, Math.min(potong, from + n - awal)));
+      var beres = await LAB.waitOcr(batas); if (!beres) out.drained = false;
+      var bagian = lama.slice(sebelum), urutMs = bagian.map(function (x) { return x.ms; }).sort(function (a, b) { return a - b; });
+      out.potongan.push({ mulai: awal, dtk: Math.round((performance.now() - tp) / 1000), halaman: bagian.length, medianMs: urutMs.length ? urutMs[Math.floor(urutMs.length / 2)] : null, maksMs: urutMs.length ? urutMs[urutMs.length - 1] : null, jumlahDtk: Math.round(bagian.reduce(function (s, x) { return s + x.ms; }, 0) / 1000), beres: beres, memoriMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null });
+      files.forEach(function (e) { if (e.blob && !e.open && !autoOcrActiveEntries.has(e)) e.blob = null; });
+      if (!beres) break;
+    }
+  } else {
+    await processFilesBatch(await LAB.loadPdfs(from, n));
+    out.drained = await LAB.waitOcr(batas);
+  }
   out.readMs = Math.round(performance.now() - t0);
   out.scanPages = files.reduce(function (s, e) { return s + (e.ocrCandidates || []).length; }, 0);
-  out.drained = await LAB.waitOcr(batas);
   out.totalMs = Math.round(performance.now() - t0);
   out.pagesRecognized = lama.length;
   var sorted = lama.slice().sort(function (a, b) { return b.ms - a.ms; });

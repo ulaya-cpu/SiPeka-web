@@ -54,6 +54,11 @@ else{
       $o = Jalankan 'uji/ocr.js' "n=$jumlah" ($scan | Select-Object -First $jumlah) 900 -luring
       $ok = (Bersih $o) -and ($o.teksIdentik -eq $o.files) -and ($o.satuJalur.galat -eq 0) -and ($o.duaJalur.galat -eq 0) -and $o.satuJalur.selesai -and $o.duaJalur.selesai -and $o.mesinLokal -and ($o.satuJalur.done -eq $o.files)
       Catat 'OCR luring, teks dua jalur identik dengan satu jalur' $ok $(if($ok){"$($o.teksIdentik)/$($o.files) identik, $($o.scanPages) halaman, $([math]::Round($o.satuJalur.ms/1000)) dtk -> $([math]::Round($o.duaJalur.ms/1000)) dtk (x$($o.percepatan))"}else{ (Masalah $o) + " identik=$($o.teksIdentik)/$($o.files) mesinLokal=$($o.mesinLokal) galat=$($o.satuJalur.galat)/$($o.duaJalur.galat)" })
+      $jumlah2=[Math]::Min(40,$scan.Count)
+      Write-Host "== 6. OCR bersamaan dengan pembacaan: $jumlah2 berkas, teks tersimpan harus utuh =="
+      $k = Jalankan 'uji/ocr-bersamaan.js' "n=$jumlah2&batas=700" ($scan | Select-Object -First $jumlah2) 900 -luring
+      $ok = (Bersih $k) -and $k.drained -and ($k.teksRusak -eq 0) -and ($k.tidakKonsisten -eq 0) -and ($k.ocrErrors -eq 0) -and ($k.failed -eq 0) -and ($k.files -eq $jumlah2)
+      Catat 'OCR tidak merusak teks tersimpan maupun status' $ok $(if($ok){"$($k.files) berkas, $($k.ocrDone) di-OCR, 0 teks rusak, 0 status tidak konsisten"}else{ (Masalah $k) + " rusak=$($k.teksRusak) tidakKonsisten=$($k.tidakKonsisten) galatOcr=$($k.ocrErrors) $(@($k.contohRusak)+@($k.contohTidakKonsisten) -join ' || ')" })
     }else{ Write-Host "(scanFiles di lokal.json kurang dari 10 berkas: uji OCR dilewati)" }
   }
 }
