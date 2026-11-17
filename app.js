@@ -31,7 +31,7 @@ window.addEventListener("unhandledrejection", e=>{
 
 /* Versi aplikasi. Naikkan setiap kali ada perubahan yang dirilis; nilai ini tampil di layar dan
    ikut tertulis di laporan Excel/CSV agar hasil pemeriksaan bisa ditelusuri ke versinya. */
-const SIPEKA_VERSION = "1.4.2";
+const SIPEKA_VERSION = "1.4.3";
 const SIPEKA_VERSION_DATE = "2026-11-17";
 
 // Pustaka PDF disertakan di dalam aplikasi (folder vendor/) agar tidak bergantung pada internet.
@@ -608,6 +608,10 @@ function rebuildEntry(stored){
   entry.ocr.running = false;
   entry.ocr.processedPages = Array.isArray(entry.ocr.processedPages) ? entry.ocr.processedPages : [];
   entry.ocr.automatic = !!entry.ocr.automatic;
+  // Versi 1.4.2 ke bawah: OCR bisa terhenti dengan "Cannot read properties of null (reading
+  // 'getPage')" karena dokumen PDF-nya ditutup bagian lain aplikasi. Itu bukan kesalahan berkas;
+  // hapus catatannya supaya OCR berkas itu dijadwalkan ulang dan dilanjutkan dari halaman terakhir.
+  if(entry.ocr.error && /reading 'getPage'|of null|Transport destroyed|Worker was destroyed/i.test(entry.ocr.error)) entry.ocr.error=null;
   if(entry.blob){
     entry.blobStored = true;
     entry.objectUrl = ""; // URL dibuat secara lazy hanya ketika pratinjau dibuka.
@@ -3006,17 +3010,29 @@ async function runOcr(entry, renderFn, evalFn, options){
 async function runOcrGuarded(entry, renderFn, evalFn, options, generation){
   try{ await ensureAnalysisData(entry); }
   catch(err){ entry.ocr.error="Data analisis berkas tidak dapat dimuat ulang."; renderFn(); return; }
-  if(!entry.pdfDoc){
-    try{
-      await ensureEntryBlob(entry);
-      entry.pdfDoc = await openPdfDocument(entry.blob,entry.name,120000);
-    }catch(err){
-      // PDF belum terpasang bukan kegagalan OCR: biarkan menunggu tanpa mencatat galat.
-      if(!entryAwaitsSourcePdf(entry)) entry.ocr.error = `Gagal memuat ulang berkas untuk OCR: ${(err&&err.message)||err}`;
-      renderFn();
-      return;
-    }
+  if(ocrRemainingPages(entry).length===0){
+    entry.ocr.done=true; entry.ocr.progress="";
+    if(options.persistActive!==false) markEntryDirty(entry); else scheduleSave(50);
+    return;
   }
+  // OCR memakai dokumen PDF MILIKNYA SENDIRI, bukan entry.pdfDoc. entry.pdfDoc dipakai pratinjau
+  // dan ditutup (lalu di-null-kan) oleh bagian lain aplikasi: membuka/menutup kartu, pindah halaman
+  // daftar, pindah menu, atau pembacaan berkas selesai. Dulu OCR ikut memakai entry.pdfDoc sehingga
+  // gagal di tengah jalan dengan "Cannot read properties of null (reading 'getPage')".
+  let ocrDoc=null;
+  try{
+    const blob=await ensureEntryBlob(entry);
+    ocrDoc = await openPdfDocument(blob,entry.name,120000);
+  }catch(err){
+    // PDF belum terpasang bukan kegagalan OCR: biarkan menunggu tanpa mencatat galat.
+    if(!entryAwaitsSourcePdf(entry)) entry.ocr.error = `Gagal memuat ulang berkas untuk OCR: ${(err&&err.message)||err}`;
+    renderFn();
+    return;
+  }
+  try{ return await runOcrPages(entry,ocrDoc,renderFn,evalFn,options,generation); }
+  finally{ await destroyPdfDocument(ocrDoc); }
+}
+async function runOcrPages(entry, ocrDoc, renderFn, evalFn, options, generation){
   const targets = ocrRemainingPages(entry);
   if(targets.length===0){
     entry.ocr.done=true; entry.ocr.progress="";
@@ -3038,7 +3054,7 @@ async function runOcrGuarded(entry, renderFn, evalFn, options, generation){
       const pageNum = pageIndex+1;
       entry.ocr.progress = `OCR ${entry.name}: halaman ${pageNum} \u2014 ${processed.size+1}/${ocrCandidatePages(entry).length}`;
       renderFn();
-      const page = await entry.pdfDoc.getPage(pageNum);
+      const page = await withTimeout(ocrDoc.getPage(pageNum),45000,`Halaman ${pageNum} tidak merespons.`);
       const baseViewport=page.getViewport({scale:1});
       const ocrScale=boundedCanvasScale(baseViewport.width,baseViewport.height,2,3200,8*1024*1024);
       const viewport = page.getViewport({scale:ocrScale});

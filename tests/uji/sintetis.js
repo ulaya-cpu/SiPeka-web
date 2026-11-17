@@ -185,6 +185,17 @@
     cek("arsip: berkas pindah ke hasil tersimpan", archivedFiles.length === 3 && files.length === 8, [archivedFiles.length, files.length]);
     cek("arsip: laporan tetap memuat semua berkas", verificationReportRows().length === 11, verificationReportRows().length);
 
+    // OCR berkas scan banyak halaman tidak boleh gagal bila, selama OCR berjalan, bagian lain
+    // aplikasi menutup dokumen PDF berkas itu (pengguna membuka/menutup kartu lain, pindah menu,
+    // atau pembacaan berkas itu baru saja selesai). Dulu: "Cannot read properties of null (reading 'getPage')".
+    var pScan = pasien(20);
+    await processFilesBatch([berkas(pScan, [eklaim(pScan), sep(pScan), resume(pScan), riwayat(pScan), [], [], []])]);
+    var eScan = entri(pScan), lain = files.find(function (e) { return e !== eScan && !e.error; });
+    var ganggu = setInterval(function () { closeAllActivePreviews(lain); if (eScan.pdfDoc) { try { eScan.pdfDoc.destroy(); } catch (x) { } eScan.pdfDoc = null; } }, 1);
+    try { await runOcr(eScan, function () { }, evaluateFile, { automatic: false }); } finally { clearInterval(ganggu); }
+    cek("OCR 3 halaman tuntas walau dokumen PDF berkas ditutup bagian lain", eScan.ocr.done === true && !eScan.ocr.error && eScan.ocr.processedPages.length === 3, [eScan.ocr.done, eScan.ocr.error, eScan.ocr.processedPages]);
+    cek("berkas itu tetap lengkap setelah OCR", kurang(eScan) === "", kurang(eScan));
+
     await LAB.send({ uji: "sintetis", lulus: lulus.length, gagal: gagal, total: lulus.length + gagal.length, versi: SIPEKA_VERSION });
   });
 })();
