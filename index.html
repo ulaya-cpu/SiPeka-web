@@ -28,7 +28,7 @@
 <title>SIPEKA Klaim — Sistem Pemeriksaan Kelengkapan Administrasi Klaim</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="./styles.css?v=1.4.4">
+<link rel="stylesheet" href="./styles.css?v=1.4.5">
 </head>
 <body>
 <div class="app">
@@ -47,7 +47,7 @@
     <div class="summary-strip" id="summaryStrip">
       <button type="button" class="sum-box filterable" id="statTotalBox" data-filter="all" title="Tampilkan semua file"><span class="n" id="statTotal">0</span><span class="l">File</span></button>
       <button type="button" class="sum-box ok filterable" id="statCompleteBox" data-filter="complete" title="Tampilkan hanya file lengkap"><span class="n" id="statComplete">0</span><span class="l">Lengkap</span></button>
-      <button type="button" class="sum-box warn filterable" id="statIncompleteBox" data-filter="incomplete" title="Tampilkan hanya file kurang"><span class="n" id="statIncomplete">0</span><span class="l">Kurang</span></button>
+      <button type="button" class="sum-box warn filterable" id="statIncompleteBox" data-filter="incomplete" title="Tampilkan hanya file tidak lengkap"><span class="n" id="statIncomplete">0</span><span class="l">Tidak Lengkap</span></button>
       <button type="button" class="sum-box fail filterable" id="statFailedBox" data-filter="failed" title="Tampilkan hanya file yang gagal dibaca"><span class="n" id="statFailed">0</span><span class="l">Gagal baca</span></button>
     </div>
   </header>
@@ -263,6 +263,6 @@
      Bila berkas lokal gagal dimuat, app.js memuat cadangannya dari CDN. -->
 <script src="./vendor/pdf.min.js"></script>
 <script src="./vendor/jszip.min.js"></script>
-<script src="./app.js?v=1.4.4"></script>
+<script src="./app.js?v=1.4.5"></script>
 </body>
 </html>

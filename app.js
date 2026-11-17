@@ -31,7 +31,7 @@ window.addEventListener("unhandledrejection", e=>{
 
 /* Versi aplikasi. Naikkan setiap kali ada perubahan yang dirilis; nilai ini tampil di layar dan
    ikut tertulis di laporan Excel/CSV agar hasil pemeriksaan bisa ditelusuri ke versinya. */
-const SIPEKA_VERSION = "1.4.4";
+const SIPEKA_VERSION = "1.4.5";
 const SIPEKA_VERSION_DATE = "2026-11-17";
 
 // Pustaka PDF disertakan di dalam aplikasi (folder vendor/) agar tidak bergantung pada internet.
@@ -3467,7 +3467,7 @@ function evaluateContentWarning(entry, item){
 /* ================= PEMERIKSAAN IDENTITAS (anti berkas tertukar / dokumen pasien lain terselip) =================
    Tujuan: memastikan semua lembar dalam satu berkas memang milik pasien yang sama.
    Hanya membaca teks yang sudah diekstrak (digital + OCR), jadi tidak menambah beban berarti.
-   Hasilnya PERINGATAN (lencana), tidak mengubah status Lengkap/Kurang.
+   Hasilnya PERINGATAN (lencana), tidak mengubah status Lengkap/Tidak Lengkap.
    - Nomor RM: nilai yang paling banyak muncul dijadikan acuan (bukan INA-CBG, yang sering
      kosong/salah ketik). Halaman yang mencantumkan nomor RM lain ditandai.
    - Nomor SEP: dicocokkan dengan nama file, dan tidak boleh ada lebih dari satu di teks digital.
@@ -3675,7 +3675,7 @@ function reprocessAllFilesOfCategory(catKey){
 /* ---------------- Results rendering ---------------- */
 function fileMissingItems(entry, catOverride){
   const cat = catOverride || categories[entry.category];
-  // Hanya dokumen WAJIB yang menentukan status "Kurang". Dokumen kondisional yang tidak
+  // Hanya dokumen WAJIB yang menentukan status "Tidak Lengkap". Dokumen kondisional yang tidak
   // ditemukan tidak menggagalkan berkas; ia dilaporkan sebagai catatan (lihat fileConditionalNotes).
   return cat.items.filter(item=>{
     if(item.conditional) return false;
@@ -3784,7 +3784,7 @@ function renderArchivedPanel(){
     line.innerHTML = `
       <span class="archived-row-name">${escapeAttr(row.name)}</span>
       <span class="archived-row-cat">${escapeAttr(catLabel)}</span>
-      ${row.error ? `<span class="badge incomplete">Gagal dibaca</span>` : (row.isComplete ? completeBadgeHtml(row.noteNames) : `<span class="badge incomplete">Kurang ${(row.missingNames||[]).length}</span>`)}
+      ${row.error ? `<span class="badge incomplete">Gagal dibaca</span>` : (row.isComplete ? completeBadgeHtml(row.noteNames) : `<span class="badge incomplete">Tidak Lengkap (kurang ${(row.missingNames||[]).length})</span>`)}
     `;
     body.appendChild(line);
   });
@@ -3794,7 +3794,7 @@ function renderArchivedPanel(){
 }
 
 const RESULT_FILTER_LABELS={
-  all:"Semua berkas", success:"Berhasil dibaca", complete:"Lengkap", incomplete:"Kurang",
+  all:"Semua berkas", success:"Berhasil dibaca", complete:"Lengkap", incomplete:"Tidak Lengkap",
   failed:"Gagal dibaca", processing:"Sedang diproses", identity:"Peringatan identitas"
 };
 function entryReadStatus(entry){
@@ -3990,7 +3990,7 @@ function renderResults(){
     let badgeHtml;
     if(entry.pending) badgeHtml = `<span class="badge loading">Memproses...</span>`;
     else if(entry.error) badgeHtml = `<span class="badge incomplete" title="${escapeAttr(entry.error)}">Gagal membaca PDF</span>`;
-    else badgeHtml = isComplete ? completeBadgeHtml(fileConditionalNotes(entry).map(item=>item.name)) : `<span class="badge incomplete" title="${escapeAttr("Dokumen WAJIB yang belum ditemukan: "+missing.map(item=>item.name).join("; "))}">Kurang ${missing.length} dokumen</span>`;
+    else badgeHtml = isComplete ? completeBadgeHtml(fileConditionalNotes(entry).map(item=>item.name)) : `<span class="badge incomplete" title="${escapeAttr("Dokumen WAJIB yang belum ditemukan: "+missing.map(item=>item.name).join("; "))}">Tidak Lengkap (kurang ${missing.length} dokumen)</span>`;
     if(!entry.pending && !entry.error) badgeHtml += identityBadgeHtml(identityWarnings(entry,duplicateSepSet));
 
     const retryBtnHtml = entry.error ? `<button class="mini-action-btn retry-file-btn" type="button" ${retryAllState?"disabled":""} title="Muat PDF yang sama dan ulangi proses pembacaan.">Coba baca ulang</button>` : "";
@@ -4177,7 +4177,7 @@ function renderResults(){
     header.className = "category-group-header";
     header.dataset.cat = catKey;
     const countText = g.total===0 ? "" :
-      `${g.total} file${(g.complete+g.incomplete+(g.failed||0))>0 ? ` &middot; ${g.complete} lengkap, ${g.incomplete} kurang${g.failed?`, ${g.failed} gagal`:""}` : ""}`;
+      `${g.total} file${(g.complete+g.incomplete+(g.failed||0))>0 ? ` &middot; ${g.complete} lengkap, ${g.incomplete} tidak lengkap${g.failed?`, ${g.failed} gagal`:""}` : ""}`;
     header.innerHTML = `
       <span class="category-group-toggle">&#9662;</span>
       <span class="category-group-icon">&#128193;</span>
@@ -4332,7 +4332,7 @@ function verificationReportRows(){
       lineCount=Math.max(1,noteLines.length);
     }else{
       const parts=missing.map((name,i)=>`${i+1}. ${name}`).concat(noteLines);
-      keterangan="Kurang"; rincian=parts.join("\n"); lineCount=Math.max(1,parts.length);
+      keterangan="Tidak Lengkap"; rincian=parts.join("\n"); lineCount=Math.max(1,parts.length);
     }
     return {
       no:idx+1, sep:row.sep||extractSepNumber(row.name)||"", keterangan, rincian,
@@ -4347,13 +4347,13 @@ function verificationReportRows(){
 async function buildVerificationWorkbook(rows,ZipEngine){
   const X=medicineXml;
   const ns="http://schemas.openxmlformats.org/spreadsheetml/2006/main";
-  const counts={Lengkap:0,Kurang:0,"Gagal Baca":0};
+  const counts={Lengkap:0,"Tidak Lengkap":0,"Gagal Baca":0};
   rows.forEach(r=>{ counts[r.keterangan]++; });
   const stamp=new Date().toLocaleString("id-ID",{dateStyle:"long",timeStyle:"short"});
   const cell=(ref,value,style,isNumber)=> isNumber
     ? `<c r="${ref}" s="${style}"><v>${Number(value)}</v></c>`
     : `<c r="${ref}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${X(value)}</t></is></c>`;
-  const ketStyle={Lengkap:6,Kurang:7,"Gagal Baca":8};
+  const ketStyle={Lengkap:6,"Tidak Lengkap":7,"Gagal Baca":8};
 
   // ---- Sheet 1: Hasil Verifikasi ----
   const last=rows.length+4;
@@ -4363,7 +4363,7 @@ async function buildVerificationWorkbook(rows,ZipEngine){
     `<sheetFormatPr defaultRowHeight="15"/>`,
     `<cols><col min="1" max="1" width="6" customWidth="1"/><col min="2" max="2" width="25" customWidth="1"/><col min="3" max="3" width="14" customWidth="1"/><col min="4" max="4" width="14" customWidth="1"/><col min="5" max="5" width="52" customWidth="1"/><col min="6" max="6" width="52" customWidth="1"/><col min="7" max="7" width="40" customWidth="1"/></cols><sheetData>`,
     `<row r="1" ht="24" customHeight="1">${cell("A1","Hasil Verifikasi Kelengkapan Berkas Klaim",1)}</row>`,
-    `<row r="2">${cell("A2",`SIPEKA Klaim v${SIPEKA_VERSION} • BPJS Kesehatan • Diunduh ${stamp} • ${rows.length} berkas: ${counts.Lengkap} lengkap, ${counts.Kurang} kurang, ${counts["Gagal Baca"]} gagal baca`,2)}</row>`,
+    `<row r="2">${cell("A2",`SIPEKA Klaim v${SIPEKA_VERSION} • BPJS Kesehatan • Diunduh ${stamp} • ${rows.length} berkas: ${counts.Lengkap} lengkap, ${counts["Tidak Lengkap"]} tidak lengkap, ${counts["Gagal Baca"]} gagal baca`,2)}</row>`,
     `<row r="3" ht="6" customHeight="1"/>`,
     `<row r="4" ht="22" customHeight="1">${["No","SEP","No. RM","Keterangan","Rincian Berkas Kurang / Catatan","Peringatan Identitas (RM/SEP/Kartu)","Nama File"].map((h,i)=>cell(String.fromCharCode(65+i)+"4",h,3)).join("")}</row>`];
   for(let i=0;i<rows.length;i++){
@@ -4382,17 +4382,17 @@ async function buildVerificationWorkbook(rows,ZipEngine){
   // ---- Sheet 2: Ringkasan per kategori ----
   const byCat=new Map();
   rows.forEach(r=>{
-    if(!byCat.has(r.kategori)) byCat.set(r.kategori,{Lengkap:0,Kurang:0,"Gagal Baca":0});
+    if(!byCat.has(r.kategori)) byCat.set(r.kategori,{Lengkap:0,"Tidak Lengkap":0,"Gagal Baca":0});
     byCat.get(r.kategori)[r.keterangan]++;
   });
   const sum=[`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${ns}"><sheetViews><sheetView workbookViewId="0" showGridLines="0"/></sheetViews>`,
     `<cols><col min="1" max="1" width="30" customWidth="1"/><col min="2" max="5" width="14" customWidth="1"/></cols><sheetData>`,
     `<row r="1" ht="24" customHeight="1">${cell("A1","Ringkasan per Kategori",1)}</row>`,
     `<row r="2">${cell("A2",`Diunduh ${stamp}`,2)}</row>`,
-    `<row r="4" ht="22" customHeight="1">${["Kategori","Lengkap","Kurang","Gagal Baca","Total"].map((h,i)=>cell(String.fromCharCode(65+i)+"4",h,3)).join("")}</row>`];
+    `<row r="4" ht="22" customHeight="1">${["Kategori","Lengkap","Tidak Lengkap","Gagal Baca","Total"].map((h,i)=>cell(String.fromCharCode(65+i)+"4",h,3)).join("")}</row>`];
   let rn=5;
   byCat.forEach((c,label)=>{
-    sum.push(`<row r="${rn}" ht="18" customHeight="1">${cell("A"+rn,label,4)}${cell("B"+rn,c.Lengkap,5,true)}${cell("C"+rn,c.Kurang,5,true)}${cell("D"+rn,c["Gagal Baca"],5,true)}<c r="E${rn}" s="12"><f>SUM(B${rn}:D${rn})</f><v>${c.Lengkap+c.Kurang+c["Gagal Baca"]}</v></c></row>`);
+    sum.push(`<row r="${rn}" ht="18" customHeight="1">${cell("A"+rn,label,4)}${cell("B"+rn,c.Lengkap,5,true)}${cell("C"+rn,c["Tidak Lengkap"],5,true)}${cell("D"+rn,c["Gagal Baca"],5,true)}<c r="E${rn}" s="12"><f>SUM(B${rn}:D${rn})</f><v>${c.Lengkap+c["Tidak Lengkap"]+c["Gagal Baca"]}</v></c></row>`);
     rn++;
   });
   sum.push(`<row r="${rn}" ht="20" customHeight="1">${cell("A"+rn,"Total",12)}${["B","C","D","E"].map(col=>`<c r="${col}${rn}" s="12"><f>SUM(${col}5:${col}${rn-1})</f></c>`).join("")}</row>`);
@@ -4496,7 +4496,7 @@ document.getElementById("exportBtn").onclick = async ()=>{
       const catLabel = row.categoryLabel || (categories[catKey]||{}).label || catKey;
       const missing = row.missingNames||[];
       const notes = row.noteNames||[];
-      const fileStatus = row.error ? `Gagal dibaca: ${row.error}` : (row.isComplete ? (notes.length?"Lengkap (dengan catatan)":"Lengkap") : `Belum Lengkap (kurang ${missing.length})`);
+      const fileStatus = row.error ? `Gagal dibaca: ${row.error}` : (row.isComplete ? (notes.length?"Lengkap (dengan catatan)":"Lengkap") : `Tidak Lengkap (kurang ${missing.length} dokumen)`);
       const completedAt = row.completedAt ? new Date(row.completedAt).toLocaleString("id-ID") : "-";
       const noUrut = row.order||idx+1;
       // Baris ringkasan: satu baris per berkas, tetap memuat gabungan singkat semua dokumen yang kurang
@@ -5075,7 +5075,7 @@ function renderBatches(){
       else if(pf.error) statusBadge = `<span class="badge incomplete" title="${escapeAttr(pf.error)}">Gagal membaca PDF</span><button class="mini-action-btn batch-retry-file" type="button">Coba baca ulang</button>`;
       else{
         const missing = fileMissingItems(pf, cat);
-        statusBadge = missing.length===0 ? completeBadgeHtml(fileConditionalNotes(pf, cat).map(item=>item.name)) : `<span class="badge incomplete">Kurang ${missing.length} dokumen</span>`;
+        statusBadge = missing.length===0 ? completeBadgeHtml(fileConditionalNotes(pf, cat).map(item=>item.name)) : `<span class="badge incomplete">Tidak Lengkap (kurang ${missing.length} dokumen)</span>`;
       }
 
       rrow.innerHTML = `
@@ -5260,7 +5260,7 @@ document.getElementById("exportBatchBtn").addEventListener("click", async ()=>{
     const rows = [["No","Nama Pasien","No Kunjungan","Tanggal","Tindakan","Hasil","Tenaga Medis","Biaya","Status Berkas","Jenis Dokumen","Status Item","Sumber"]];
     batch.roster.forEach((row, idx)=>{
       const pf = batch.patientFiles.find(p=>p.rosterIndex===idx);
-      const fileStatus = !pf ? "Belum ada berkas" : (pf.pending ? "Memproses" : (pf.error ? pf.error : (fileMissingItems(pf, cat).length===0 ? "Lengkap" : `Kurang ${fileMissingItems(pf, cat).length} dokumen`)));
+      const fileStatus = !pf ? "Belum ada berkas" : (pf.pending ? "Memproses" : (pf.error ? pf.error : (fileMissingItems(pf, cat).length===0 ? "Lengkap" : `Tidak Lengkap (kurang ${fileMissingItems(pf, cat).length} dokumen)`)));
       if(!pf || pf.pending || pf.error){
         rows.push([idx+1, row.name, row.noKunjungan, row.tanggal, row.tindakan, row.hasil, row.tenagaMedis, row.biaya, fileStatus, "-", "-", "-"]);
       }else{
