@@ -196,6 +196,61 @@
     cek("OCR 3 halaman tuntas walau dokumen PDF berkas ditutup bagian lain", eScan.ocr.done === true && !eScan.ocr.error && eScan.ocr.processedPages.length === 3, [eScan.ocr.done, eScan.ocr.error, eScan.ocr.processedPages]);
     cek("berkas itu tetap lengkap setelah OCR", kurang(eScan) === "", kurang(eScan));
 
+    // PDF asal hilang dari lokasinya setelah dipilih (dipindah, diganti nama, dihapus, flashdisk dilepas).
+    // Browser lalu menolak membacanya dengan NotFoundError. Dulu OCR mencatat "Gagal memuat ulang berkas
+    // untuk OCR: A requested file or directory could not be found..." dan memilih ulang berkas yang sama
+    // dianggap duplikat sehingga berkas itu tidak bisa dipulihkan.
+    var autoSemula = autoOcrEnabled; autoOcrEnabled = false;
+    function berkasHilang(f) {
+      var gagalBaca = function () { return Promise.reject(new DOMException("A requested file or directory could not be found at the time an operation was processed.", "NotFoundError")); };
+      return { name: f.name, size: f.size, type: f.type, lastModified: f.lastModified, slice: function () { return { arrayBuffer: gagalBaca }; }, arrayBuffer: gagalBaca };
+    }
+    var pHilang = pasien(21), fHilang = berkas(pHilang, [eklaim(pHilang), sep(pHilang), resume(pHilang), riwayat(pHilang), [], []]);
+    await processFilesBatch([fHilang]);
+    var eHilang = entri(pHilang);
+    eHilang.blob = berkasHilang(fHilang);
+    await runOcr(eHilang, function () { }, evaluateFile, { automatic: false });
+    cek("PDF asal hilang: OCR tidak dicatat gagal", !eHilang.ocr.error, eHilang.ocr.error);
+    cek("PDF asal hilang: berkas berstatus menunggu PDF dipilih ulang", entryAwaitsSourcePdf(eHilang) && !eHilang.ocr.done, [entryAwaitsSourcePdf(eHilang), eHilang.ocr.done]);
+    var pasangHilang = await processFilesBatch([fHilang]);
+    cek("PDF asal hilang: pilih ulang berkas yang sama memasangnya kembali", pasangHilang.reattached === 1 && pasangHilang.added === 0, pasangHilang);
+    await runOcr(eHilang, function () { }, evaluateFile, { automatic: false });
+    cek("PDF asal hilang: OCR tuntas setelah dipilih ulang", eHilang.ocr.done === true && !eHilang.ocr.error && eHilang.ocr.processedPages.length === 2, [eHilang.ocr.done, eHilang.ocr.error, eHilang.ocr.processedPages]);
+    // Baca ulang berkas yang PDF-nya hilang: galat jelas, lalu pulih setelah dipilih ulang.
+    eHilang.blob = berkasHilang(fHilang);
+    await retryActiveEntryAnalysis(eHilang);
+    cek("PDF asal hilang saat baca ulang: pesan menyuruh pilih ulang", /pilih ulang/i.test(eHilang.error || "") && entryAwaitsSourcePdf(eHilang), [eHilang.error, entryAwaitsSourcePdf(eHilang)]);
+    var pasangUlang = await processFilesBatch([fHilang]);
+    cek("PDF asal hilang saat baca ulang: pulih setelah dipilih ulang", pasangUlang.reattached === 1 && !eHilang.error && !eHilang.pending && kurang(eHilang) === "", [pasangUlang, eHilang.error, eHilang.pending, kurang(eHilang)]);
+
+    // Pilih ulang berkas yang sama tetapi waktu ubahnya berbeda (disalin lewat flashdisk FAT32/exFAT,
+    // diunduh/disalin ulang, diekstrak lagi dari ZIP). Dulu dianggap berkas baru: kartu lama tetap
+    // "PDF asal belum terpasang" dan muncul kartu kembar.
+    function lepas(e) { e.blob = null; e.sourceMissing = true; }
+    function salinan(f, opsi) { opsi = opsi || {}; var g = new File([f], f.name, { type: f.type, lastModified: opsi.lastModified || f.lastModified }); if (opsi.relPath) Object.defineProperty(g, "webkitRelativePath", { value: opsi.relPath }); return g; }
+    var jumlahSebelum = files.length;
+    lepas(eHilang);
+    var pasangWaktu = await processFilesBatch([salinan(fHilang, { lastModified: fHilang.lastModified + 2000 })]);
+    cek("pilih ulang dengan waktu ubah berbeda: terpasang kembali, bukan berkas baru", pasangWaktu.reattached === 1 && pasangWaktu.added === 0 && files.length === jumlahSebelum && !entryAwaitsSourcePdf(eHilang), [pasangWaktu, files.length - jumlahSebelum, entryAwaitsSourcePdf(eHilang)]);
+    // Berkas yang sama pernah masuk dua kali (mis. sekali lewat Sampling dengan jalur folder, sekali
+    // diunggah langsung). Satu kali pilih ulang harus memasang keduanya.
+    var pKembar = pasien(22), fKembar = berkas(pKembar, [eklaim(pKembar), sep(pKembar), resume(pKembar), riwayat(pKembar)]);
+    await processFilesBatch([salinan(fKembar, { relPath: "SAMPLING/" + fKembar.name })]);
+    await processFilesBatch([fKembar]);
+    var kembar = files.filter(function (e) { return e.name === fKembar.name; });
+    cek("berkas kembar: memang tercatat dua kali", kembar.length === 2, kembar.length);
+    kembar.forEach(lepas);
+    jumlahSebelum = files.length;
+    var pasangKembar = await processFilesBatch([fKembar]);
+    cek("berkas kembar: satu kali pilih ulang memasang keduanya", pasangKembar.reattached === 2 && pasangKembar.added === 0 && files.length === jumlahSebelum && kembar.every(function (e) { return !entryAwaitsSourcePdf(e); }), [pasangKembar, kembar.map(entryAwaitsSourcePdf)]);
+    // Pengaman: nama sama tetapi ukuran berbeda = isi berbeda; tidak boleh dipasangkan ke kartu lama.
+    lepas(eHilang);
+    var beda = new File([fHilang, new Uint8Array([10, 37, 37, 69, 79, 70, 10])], fHilang.name, { type: "application/pdf", lastModified: fHilang.lastModified });
+    var pasangBeda = await processFilesBatch([beda]);
+    cek("nama sama, ukuran berbeda: tidak dipasangkan ke kartu lama", pasangBeda.reattached === 0 && entryAwaitsSourcePdf(eHilang), [pasangBeda, entryAwaitsSourcePdf(eHilang)]);
+    cek("nama sama, ukuran berbeda: pengguna diberi tahu", pasangBeda.sameNameNew === 1 && /Perhatian: 1 berkas bernama sama/.test(document.getElementById("progressLine").textContent), [pasangBeda.sameNameNew, document.getElementById("progressLine").textContent]);
+    autoOcrEnabled = autoSemula;
+
     await LAB.send({ uji: "sintetis", lulus: lulus.length, gagal: gagal, total: lulus.length + gagal.length, versi: SIPEKA_VERSION });
   });
 })();

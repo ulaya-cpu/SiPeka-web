@@ -31,7 +31,7 @@ window.addEventListener("unhandledrejection", e=>{
 
 /* Versi aplikasi. Naikkan setiap kali ada perubahan yang dirilis; nilai ini tampil di layar dan
    ikut tertulis di laporan Excel/CSV agar hasil pemeriksaan bisa ditelusuri ke versinya. */
-const SIPEKA_VERSION = "1.4.3";
+const SIPEKA_VERSION = "1.4.4";
 const SIPEKA_VERSION_DATE = "2026-11-17";
 
 // Pustaka PDF disertakan di dalam aplikasi (folder vendor/) agar tidak bergantung pada internet.
@@ -612,6 +612,9 @@ function rebuildEntry(stored){
   // 'getPage')" karena dokumen PDF-nya ditutup bagian lain aplikasi. Itu bukan kesalahan berkas;
   // hapus catatannya supaya OCR berkas itu dijadwalkan ulang dan dilanjutkan dari halaman terakhir.
   if(entry.ocr.error && /reading 'getPage'|of null|Transport destroyed|Worker was destroyed/i.test(entry.ocr.error)) entry.ocr.error=null;
+  // Versi 1.4.3 ke bawah mencatat PDF asal yang hilang dari lokasinya sebagai kegagalan OCR.
+  // Setelah dibuka ulang berkas itu memang menunggu dipilih ulang; hapus catatannya.
+  if(entry.ocr.error && /could not be found at the time an operation|tidak ditemukan lagi di lokasinya/i.test(entry.ocr.error)) entry.ocr.error=null;
   if(entry.blob){
     entry.blobStored = true;
     entry.objectUrl = ""; // URL dibuat secara lazy hanya ketika pratinjau dibuka.
@@ -721,6 +724,8 @@ function withTimeout(promise,ms,message){
 function classifyPdfError(err){
   const name=(err&&err.name)||"";
   const msg=String((err&&err.message)||err||"");
+  if(isSourceFileGoneError(err))
+    return {kind:"storage",message:SOURCE_GONE_MESSAGE};
   if(name==="PasswordException"||/password/i.test(msg))
     return {kind:"permanent",message:"PDF terkunci kata sandi. Buka kuncinya lalu unggah ulang."};
   if(name==="InvalidPDFException"||/bukan PDF yang valid|kosong atau tidak tersedia|Invalid PDF/i.test(msg))
@@ -845,6 +850,26 @@ async function readWorkspaceBlob(folderName,fileName){
 // Berkas "baca langsung" (entry.sourceOnly) tidak punya salinan PDF. Referensi File hanya hidup
 // selama sesi browser; setelah browser dibuka ulang PDF harus dipilih ulang agar terpasang kembali.
 const SOURCE_MISSING_MESSAGE="PDF asal tidak tersedia di sesi ini. Pilih/unggah ulang berkas yang sama agar terpasang kembali (hasil pemeriksaan tetap tersimpan).";
+const SOURCE_GONE_MESSAGE="PDF asal tidak ditemukan lagi di lokasinya (dipindah, diganti nama, dihapus, atau flashdisk/harddisk dilepas). Pilih ulang berkas yang sama dari lokasinya sekarang; hasil pemeriksaan tetap tersimpan.";
+// Browser menolak membaca berkas yang sudah tidak ada di tempat semula sejak dipilih:
+// "A requested file or directory could not be found..." (NotFoundError) atau, bila berkasnya
+// diubah/terkunci, NotReadableError.
+function isSourceFileGoneError(err){
+  const name=(err&&err.name)||"";
+  if(name==="NotFoundError"||name==="NotReadableError") return true;
+  return /could not be found at the time an operation|could not be read, typically due to permission/i.test(String((err&&err.message)||err||""));
+}
+// Melepas rujukan ke PDF "baca langsung" yang sudah hilang, supaya berkas itu berstatus menunggu
+// PDF dipilih ulang dan, saat berkas yang sama dipilih lagi, terpasang kembali (bukan dianggap duplikat).
+function detachGoneSource(entry){
+  if(!entry||!entry.sourceOnly) return false;
+  entry.blob=null;
+  entry.sourceMissing=true;
+  entry.sourceGone=true;
+  if(entry.objectUrl){ try{ URL.revokeObjectURL(entry.objectUrl); }catch(e){} }
+  entry.objectUrl="";
+  return true;
+}
 async function getEntryBlobForBackup(entry){
   if(entry.blob) return entry.blob;
   if(entry.blobStored){
@@ -2005,6 +2030,7 @@ async function analyzeEntryPdf(entry){
     const info=classifyPdfError(err);
     entry.error=info.message;
     entry.errorKind=info.kind;
+    if(isSourceFileGoneError(err)) detachGoneSource(entry);
     if(err&&err.code==="TIMEOUT") retireSharedPdfWorker();
   }
   entry.pending = false;
@@ -2179,32 +2205,53 @@ async function processFilesBatch(fileList){
   let skipped = 0;
   // Berkas "baca langsung" yang PDF-nya belum terpasang (mis. setelah browser dibuka ulang):
   // bila berkas yang sama dipilih lagi, pasangkan kembali alih-alih dianggap duplikat.
-  const looseFileKey=row=>`${String(row.name||"").toLowerCase()}|${Number(row.size)||0}|${Number(row.lastModified)||0}`;
-  const detachedByFingerprint = new Map();
-  const detachedByLooseKey = new Map();
+  // Berkas dianggap sama bila NAMA dan UKURAN (byte) sama. Waktu ubah dan jalur folder sengaja
+  // tidak disyaratkan: waktu ubah ikut berubah saat berkas disalin lewat flashdisk FAT32/exFAT,
+  // diunduh/disalin ulang, atau diekstrak lagi dari ZIP; jalur folder berbeda antara unggah lewat
+  // Sampling (pilih folder) dan unggah langsung. Dulu keduanya disyaratkan sehingga kartu lama tetap
+  // "PDF asal belum terpasang" dan berkas yang dipilih ulang malah menjadi kartu baru.
+  // Satu berkas yang dipilih ulang memasang SEMUA kartu yang menunggunya (berkas yang pernah masuk dua kali).
+  const nameSizeKey=row=>`${String(row.name||"").toLowerCase()}|${Number(row.size)||0}`;
+  const detachedByNameSize = new Map();
   files.forEach(entry=>{
     if(!entry.sourceOnly || entry.blob) return;
-    if(entry.fingerprint) detachedByFingerprint.set(entry.fingerprint,entry);
-    const key=looseFileKey(entry);
-    detachedByLooseKey.set(key, detachedByLooseKey.has(key) ? null : entry); // null = ambigu, jangan dipakai
+    const key=nameSizeKey(entry);
+    if(!detachedByNameSize.has(key)) detachedByNameSize.set(key,[]);
+    detachedByNameSize.get(key).push(entry);
   });
+  // Nama kartu yang menunggu PDF: berkas dengan nama sama tetapi ukuran berbeda (isi berbeda, mis. diekspor
+  // ulang) tidak dipasangkan, tetapi pengguna diberi tahu supaya tidak bingung melihat kartu baru.
+  const waitingNames = new Set(Array.from(detachedByNameSize.values()).flat().map(entry=>String(entry.name||"").toLowerCase()));
+  let sameNameNew = 0;
   const reattached = [];
+  let fingerprintsChanged = false;
   incoming.forEach(f=>{
     const fingerprint = fileFingerprint(f);
     if(batchFingerprints.has(fingerprint)){ skipped++; return; }
-    let waiting = detachedByFingerprint.get(fingerprint) || detachedByLooseKey.get(looseFileKey(f)) || null;
-    if(waiting && waiting.blob) waiting=null; // sudah terpasang oleh berkas lain di unggahan ini
-    if(waiting){
+    const waiting = (detachedByNameSize.get(nameSizeKey(f))||[]).filter(entry=>!entry.blob);
+    if(waiting.length){
       batchFingerprints.add(fingerprint);
-      waiting.blob=f;
-      waiting.sourceMissing=false;
-      reattached.push(waiting);
+      waiting.forEach(entry=>{
+        entry.blob=f;
+        entry.sourceMissing=false;
+        entry.sourceGone=false;
+        // Catat ciri berkas yang baru dipilih supaya pemasangan berikutnya dan cek duplikat cocok persis.
+        if(entry.fingerprint!==fingerprint || entry.lastModified!==(f.lastModified||0)){
+          entry.fingerprint=fingerprint;
+          entry.lastModified=f.lastModified||0;
+          fingerprintsChanged=true;
+          dirtyActiveIds.add(entry.id);
+        }
+        reattached.push(entry);
+      });
       return;
     }
     if(knownFingerprints.has(fingerprint)){ skipped++; return; }
     batchFingerprints.add(fingerprint);
+    if(waitingNames.has(String(f.name||"").toLowerCase())) sameNameNew++;
     list.push({file:f, fingerprint});
   });
+  if(fingerprintsChanged){ refreshKnownFingerprints(); scheduleSave(300); }
   const progress = document.getElementById("progressLine");
   // Berkas terpasang kembali yang analisisnya terputus / gagal karena PDF tidak tersedia dibaca ulang.
   const reanalyze = reattached.filter(entry=>entry.pending || (entry.error && entry.errorKind==="storage"));
@@ -2294,9 +2341,10 @@ async function processFilesBatch(fileList){
     (reattached.length ? `; ${reattached.length} berkas dipasangkan kembali dengan PDF asalnya` : "") +
     (failedAfterImport ? `; ${failedAfterImport} gagal dibaca (lihat kotak merah untuk memuat ulang sekaligus)` : "") +
     (skipped ? `; ${skipped} duplikat tidak dimasukkan` : "") +
-    (storageFailures ? `; ${storageFailures} PDF tidak berhasil disimpan permanen karena keterbatasan penyimpanan.` : ".");
-  setTimeout(()=>{ progress.textContent=""; }, 5000);
-  return {added:newEntries.length, skipped};
+    (storageFailures ? `; ${storageFailures} PDF tidak berhasil disimpan permanen karena keterbatasan penyimpanan.` : ".") +
+    (sameNameNew ? ` Perhatian: ${sameNameNew} berkas bernama sama dengan kartu yang menunggu PDF tetapi ukurannya berbeda (isinya berubah), jadi dimasukkan sebagai kartu baru. Periksa, lalu hapus kartu lama bila memang sudah diganti.` : "");
+  setTimeout(()=>{ progress.textContent=""; }, sameNameNew?20000:5000);
+  return {added:newEntries.length, skipped, reattached:reattached.length, sameNameNew};
 }
 
 async function resumeInterruptedFiles(){
@@ -3024,8 +3072,10 @@ async function runOcrGuarded(entry, renderFn, evalFn, options, generation){
     const blob=await ensureEntryBlob(entry);
     ocrDoc = await openPdfDocument(blob,entry.name,120000);
   }catch(err){
+    // PDF asal sudah hilang dari lokasinya: lepaskan rujukannya agar berkas menunggu dipilih ulang.
+    if(isSourceFileGoneError(err)) detachGoneSource(entry);
     // PDF belum terpasang bukan kegagalan OCR: biarkan menunggu tanpa mencatat galat.
-    if(!entryAwaitsSourcePdf(entry)) entry.ocr.error = `Gagal memuat ulang berkas untuk OCR: ${(err&&err.message)||err}`;
+    if(!entryAwaitsSourcePdf(entry)) entry.ocr.error = `Gagal memuat ulang berkas untuk OCR: ${isSourceFileGoneError(err)?SOURCE_GONE_MESSAGE:((err&&err.message)||err)}`;
     renderFn();
     return;
   }
@@ -3211,8 +3261,9 @@ async function mountPdfViewer(paneEl, entry){
   try{
     pdfDoc = await ensurePdfDocForEntry(entry);
   }catch(err){
+    if(isSourceFileGoneError(err)) detachGoneSource(entry);
     if(!paneEl.isConnected) return;
-    if(infoEl) infoEl.textContent = "Pratinjau tidak tersedia (" + (err.message||"gagal memuat berkas") + ").";
+    if(infoEl) infoEl.textContent = "Pratinjau tidak tersedia (" + (isSourceFileGoneError(err)?SOURCE_GONE_MESSAGE:(err.message||"gagal memuat berkas")) + ").";
     const wrapEl = paneEl.querySelector(".viewer-canvas-wrap");
     if(wrapEl){ wrapEl.classList.add("viewer-collapsed-hint"); wrapEl.textContent = "Tidak bisa menampilkan pratinjau. Coba \u201cBuka di tab baru\u201d."; }
     return;
@@ -3981,7 +4032,7 @@ function renderResults(){
         <div class="check-pane"></div>
       </div>
       ${ocrHtml}
-      <div class="file-foot">${entry.error ? `<span class="fail-reason">&#9888; ${escapeAttr(entry.error)}</span> &middot; ` : ""}${(entry.sourceOnly && !entry.blob && !entry.error) ? `<span class="fail-reason" title="${escapeAttr(SOURCE_MISSING_MESSAGE)}">PDF asal belum terpasang &mdash; pilih ulang berkas yang sama untuk pratinjau/OCR</span> &middot; ` : ""}${cat.label} &middot; ${cat.items.length} jenis dokumen dicek</div>
+      <div class="file-foot">${entry.error ? `<span class="fail-reason">&#9888; ${escapeAttr(entry.error)}</span> &middot; ` : ""}${(entry.sourceOnly && !entry.blob && !entry.error) ? `<span class="fail-reason" title="${escapeAttr(entry.sourceGone?SOURCE_GONE_MESSAGE:SOURCE_MISSING_MESSAGE)}">${entry.sourceGone?"PDF asal tidak ditemukan lagi di lokasinya":"PDF asal belum terpasang"} &mdash; pilih ulang berkas yang sama untuk pratinjau/OCR</span> &middot; ` : ""}${cat.label} &middot; ${cat.items.length} jenis dokumen dicek</div>
     `;
 
     card.querySelector(".file-head").addEventListener("click", (e)=>{
