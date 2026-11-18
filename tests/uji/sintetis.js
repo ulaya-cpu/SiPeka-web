@@ -274,6 +274,41 @@
     cek("nama sama, ukuran berbeda: pengguna diberi tahu", pasangBeda.sameNameNew === 1 && /Perhatian: 1 berkas bernama sama/.test(document.getElementById("progressLine").textContent), [pasangBeda.sameNameNew, document.getElementById("progressLine").textContent]);
     autoOcrEnabled = autoSemula;
 
+    // Kode INA-CBG & kode prosedur ICD-9-CM di Berkas Klaim Individual menentukan apakah Laporan
+    // Operasi / Hasil Penunjang wajib. Teks meniru dua format e-klaim nyata (tanpa data pasien).
+    function berkasKode(kategori, halaman) {
+      var e = { id: "kode-" + Math.random(), name: "kode.pdf", category: kategori, itemsStatus: {}, digitalText: halaman.join("\n"), ocrText: "", pageTexts: halaman.slice() };
+      evaluateFile(e); return e;
+    }
+    function kurangId(e) { return fileMissingItems(e).map(function (m) { return m.id; }); }
+    var ekSesar = "berkas klaim individual pasien diagnosa utama : o61.0 failed medical induction of labour diagnosa sekunder : o82.1 delivery by emergency caesarean section prosedur : 74.1 low cervical cesarean section 57.94 insertion of indwelling urinary catheter 90.59 microscopic examination of blood 99.21 injection of antibiotic adl sub acute : - hasil grouping ina-cbg : o-6-10-i operasi pembedahan caesar (ringan) rp 4,567,700.00 total tarif : rp 4,567,700.00 generated : e-klaim 5.10.9.202609291001 @ 2026-11-05 10:41:45";
+    var ekHernia = "berkas klaim individual pasien diagnosa utama : diagnosa sekunder : prosedur unilateral repair of inguinal hernia other chest x-ray : : adl sub acute - hasil grouping prosedur hernia inguinal dan femoral (ringan) ina-cbg rp : k-1-14-i : - 4.816.900,00 13/10/2026 nomor sep k40.3 53.05 96.59 90.59 87.49 99.21 adl chronic : - rp 0,00 lembar 1 / 1";
+    var ekVentilator = "berkas klaim individual pasien prosedur continuous mechanical ventilation hasil grouping prosedur sistem pernafasan non-kompleks (ringan) ina-cbg rp : j-1-20-i : - 18.284.100,00 j96.1 96.71 93.94 57.94 90.59 99.60 96.07 99.29";
+    var ekPersalinan = "berkas klaim individual pasien prosedur : 73.59 other manually assisted delivery 75.69 repair of other current obstetric laceration hasil grouping ina-cbg : o-6-13-i persalinan vaginal (ringan) rp 3,000,000.00";
+    var ekDialisis = "berkas klaim individual pasien jenis perawatan : 2 - rawat jalan prosedur : 39.95 hemodialysis hasil grouping ina-cbg : n-3-15-0 prosedur dialisis rp 841,900.00";
+    var ekRjLab = "berkas klaim individual pasien jenis perawatan : 2 - rawat jalan prosedur : 89.03 interview and evaluation 90.59 microscopic examination of blood hasil grouping ina-cbg : q-5-44-0 penyakit kronis kecil lain-lain rp 188,700.00";
+    var lapOperasi = "laporan operasi nama pasien : x jenis operasi : herniorrhaphy dokter operator : dr. x mulai operasi jam 09:00 selesai jam 10:00 jenis anestesi : spinal temuan operasi : kantong hernia lateral, tindakan : herniotomi dan hernioplasti dengan mesh, jaringan dikirim pa : tidak, perdarahan 20 cc, komplikasi : tidak ada";
+
+    var cSesar = parseClaimCoding(ekSesar), cHernia = parseClaimCoding(ekHernia);
+    cek("e-klaim format 1: kode INA-CBG, case group, deskripsi, prosedur terbaca", cSesar && cSesar.code === "O-6-10-I" && cSesar.caseGroup === 6 && /operasi pembedahan caesar/.test(cSesar.description) && cSesar.surgery.join() === "74.1" && cSesar.investigations.join() === "90.59", cSesar);
+    cek("e-klaim format 2: kode di belakang, ICD-10 & nominal tidak dianggap prosedur", cHernia && cHernia.code === "K-1-14-I" && /hernia inguinal/.test(cHernia.description) && cHernia.surgery.join() === "53.05" && cHernia.procedures.indexOf("40.3") < 0 && cHernia.procedures.indexOf("816.9") < 0, cHernia);
+    cek("versi e-klaim (5.10.9) dan tarif tidak dianggap kode prosedur", parseClaimCoding(ekSesar).procedures.indexOf("10.9") < 0 && parseClaimCoding(ekRjLab).procedures.indexOf("00.00") < 0, parseClaimCoding(ekSesar).procedures);
+    cek("e-klaim berkode operasi (Seksio Sesar) tanpa laporan operasi -> Laporan Operasi wajib & kurang", kurangId(berkasKode("rs_inap", [ekSesar])).indexOf("operasi") >= 0);
+    cek("e-klaim berkode operasi + laporan operasi ada -> tidak kurang", kurangId(berkasKode("rs_inap", [ekHernia, lapOperasi])).indexOf("operasi") < 0);
+    var eVent = berkasKode("rs_inap", [ekVentilator]);
+    cek("Case Group 1 tanpa kode operasi (ventilator, kateter) -> Laporan Operasi tetap kondisional", kurangId(eVent).indexOf("operasi") < 0 && fileConditionalNotes(eVent).some(function (m) { return m.id === "operasi"; }), parseClaimCoding(ekVentilator));
+    cek("persalinan normal & jahit robekan bukan operasi", kurangId(berkasKode("rs_inap", [ekPersalinan])).indexOf("operasi") < 0 && parseClaimCoding(ekPersalinan).surgery.length === 0);
+    cek("hemodialisis bukan operasi", parseClaimCoding(ekDialisis).surgery.length === 0 && parseClaimCoding(ekDialisis).code === "N-3-15-0");
+    var eRjLab = berkasKode("rs_jalan", [ekRjLab]);
+    cek("rawat jalan: kode lab terbaca, tetapi Hasil Penunjang tetap kondisional (fokus rawat inap)", eRjLab.claimCoding.investigations.join() === "90.59" && kurangId(eRjLab).indexOf("penunjang") < 0, [eRjLab.claimCoding, kurangId(eRjLab)]);
+    var eRjOp = berkasKode("rs_jalan", [ekHernia]);
+    cek("aturan e-klaim tidak berlaku di kategori selain Rawat Inap", itemRequiredByCoding(eRjOp, { id: "operasi", conditional: true }) === null);
+    cek("tanpa e-klaim -> aturan lama (Laporan Operasi kondisional)", berkasKode("rs_inap", ["surat perintah rawat inap"]).claimCoding === null && kurangId(berkasKode("rs_inap", ["surat perintah rawat inap"])).indexOf("operasi") < 0);
+    var eNa = { id: "kode-na", name: "na.pdf", category: "rs_inap", itemsStatus: { operasi: { source: "none", manual: false, userTouched: false, na: true } }, digitalText: ekSesar, ocrText: "", pageTexts: [ekSesar] };
+    evaluateFile(eNa);
+    cek("tanda 'Tidak berlaku' lama tidak bisa menutupi operasi yang tercatat di e-klaim", eNa.itemsStatus.operasi.na === false && kurangId(eNa).indexOf("operasi") >= 0, eNa.itemsStatus.operasi);
+    cek("berkas e-klaim rekaan lama (tanpa prosedur) tidak berubah", e1.claimCoding && e1.claimCoding.code === "Q-5-44-0" && e1.claimCoding.procedures.length === 0, e1.claimCoding);
+
     await LAB.send({ uji: "sintetis", lulus: lulus.length, gagal: gagal, total: lulus.length + gagal.length, versi: SIPEKA_VERSION });
   });
 })();

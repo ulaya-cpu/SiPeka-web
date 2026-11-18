@@ -31,8 +31,8 @@ window.addEventListener("unhandledrejection", e=>{
 
 /* Versi aplikasi. Naikkan setiap kali ada perubahan yang dirilis; nilai ini tampil di layar dan
    ikut tertulis di laporan Excel/CSV agar hasil pemeriksaan bisa ditelusuri ke versinya. */
-const SIPEKA_VERSION = "1.4.6";
-const SIPEKA_VERSION_DATE = "2026-11-18";
+const SIPEKA_VERSION = "1.4.7";
+const SIPEKA_VERSION_DATE = "2026-11-19";
 
 // Pustaka PDF disertakan di dalam aplikasi (folder vendor/) agar tidak bergantung pada internet.
 // CDN di bawah hanya cadangan bila berkas lokal gagal dimuat.
@@ -439,6 +439,7 @@ function serializeEntry(e, includeBlob, includeAnalysis){
     blobStored:!!e.blobStored, analysisStored:!!e.analysisStored, sourceOnly:!!e.sourceOnly,
     externalStored:!!e.externalStored, externalAnalysisStored:!!e.externalAnalysisStored,
     externalAnalysisGroup:(e.externalAnalysisGroup!=null)?e.externalAnalysisGroup:null,
+    claimCoding:e.claimCoding||null,
     externalPdfFolder:e.externalPdfFolder||"active-pdfs", externalFileName:e.externalFileName||`${e.id}.pdf`,
     ocrCandidates:Array.isArray(e.ocrCandidates)?e.ocrCandidates:[],
     identity:e.identity||null,
@@ -3462,6 +3463,90 @@ async function mountPdfViewer(paneEl, entry){
 function evaluateFile(entry){
   evaluateAgainstCat(entry, categories[entry.category]);
 }
+/* ---------------- Kode INA-CBG & prosedur dari Berkas Klaim Individual (e-klaim) ----------------
+   Permenkes 26/2021: kode INA-CBG = CMG - Case Group - Case Type - Severity (mis. K-1-14-I).
+   Case Group 1 = Prosedur Rawat Inap, 4 = Rawat Inap Bukan Prosedur, 6 = Rawat Inap Kebidanan, dst.
+   Case Group saja tidak cukup (J-1-20 berisi ventilator/kateter, bukan operasi; Seksio Sesar O-6-10
+   ada di Case Group 6), sehingga penentu utamanya adalah kode prosedur ICD-9-CM yang tercetak di
+   lembar e-klaim yang sama:
+   - kode operasi (bab 01-86, kecuali tindakan kecil di ruang rawat) -> Laporan Operasi WAJIB;
+   - kode lab/radiologi/EKG -> Hasil Penunjang WAJIB.
+   Aturan ini hanya MENAIKKAN dokumen kondisional menjadi wajib; tanpa e-klaim yang terbaca,
+   aturan kategori berlaku seperti biasa. Hanya teks digital yang dipakai (hasil OCR bisa salah baca angka). */
+// Tindakan bernomor bab 01-86 yang bukan operasi kamar bedah (tidak disertai laporan operasi).
+// Awalan "73.5" mencakup 73.51, 73.59, dst.
+const ICD9_NON_SURGICAL_PREFIXES=[
+  "57.94","57.95",            // kateter urin
+  "38.9",                     // kateter/pungsi vena & arteri
+  "39.95",                    // hemodialisis
+  "03.31","34.91","54.91",    // pungsi lumbal, torakosentesis, parasentesis
+  "21.01",                    // tampon hidung (epistaksis)
+  "86.28","86.59",            // debridemen non-eksisi, jahit luka kulit
+  "73.0","73.1","73.4","73.5","73.6", // induksi, pecah ketuban, persalinan normal dibantu, episiotomi
+  "75.3","75.4","75.6"        // pemantauan janin, plasenta manual, jahit robekan jalan lahir
+];
+function isSurgicalIcd9(code){
+  const major=Number(String(code).split(".")[0]);
+  if(!(major>=1 && major<=86)) return false;
+  return !ICD9_NON_SURGICAL_PREFIXES.some(p=>code===p || code.startsWith(p));
+}
+// Lab (90-91), radiologi/USG (87-88), kedokteran nuklir (92), EKG (89.52), EEG (89.14).
+function isInvestigationIcd9(code){
+  const major=Number(String(code).split(".")[0]);
+  return major===87 || major===88 || major===90 || major===91 || major===92 || code==="89.52" || code==="89.14";
+}
+const INACBG_CASE_GROUPS={1:"Prosedur Rawat Inap",2:"Prosedur Besar Rawat Jalan",3:"Prosedur Signifikan Rawat Jalan",4:"Rawat Inap Bukan Prosedur",5:"Rawat Jalan Bukan Prosedur",6:"Rawat Inap Kebidanan",7:"Rawat Jalan Kebidanan",8:"Rawat Inap Neonatal",9:"Rawat Jalan Neonatal",0:"Error"};
+// Membaca halaman e-klaim dari teks digital (satu baris = satu halaman). Mengembalikan null bila tidak ada.
+function parseClaimCoding(digitalText){
+  const pages=String(digitalText||"").toLowerCase().split("\n");
+  const codeRe=/(?:^|[^a-z0-9-])([a-z]{1,2})\s?-\s?(\d)\s?-\s?(\d{2})\s?-\s?(iii|ii|i|0)(?![a-z0-9])/;
+  for(const page of pages){
+    if(!/hasil\s+grouping|berkas\s+klaim\s+individual/.test(page)) continue;
+    const m=codeRe.exec(page);
+    if(!m) continue;
+    const code=`${m[1]}-${m[2]}-${m[3]}-${m[4]}`.toUpperCase();
+    // Deskripsi: sesudah kode (format e-klaim 5.x) atau di antara "hasil grouping" dan "ina-cbg" (format lain).
+    const after=page.slice(m.index+m[0].length);
+    let desc=(/^\s*([a-z][a-z0-9 ,&\/()\-.]{2,80}?)\s+rp\b/.exec(after)||[])[1]||"";
+    if(!desc) desc=(/hasil\s+grouping\s+([a-z][a-z0-9 ,&\/()\-.]{2,80}?)\s+ina-?\s?cbg/.exec(page)||[])[1]||"";
+    // Kode ICD-9-CM: "53.05", "74.1". Bukan bagian ICD-10 ("k40.3"), versi ("5.10.9") maupun nominal ("841,900.00").
+    const procedures=[];
+    const procRe=/(^|[^\w.,])(\d{2})\.(\d{1,2})(?![\w.,])/g;
+    let p;
+    while((p=procRe.exec(page))){ const c=`${p[2]}.${p[3]}`; if(!procedures.includes(c)) procedures.push(c); }
+    return {
+      code, cmg:m[1].toUpperCase(), caseGroup:Number(m[2]), caseGroupLabel:INACBG_CASE_GROUPS[Number(m[2])]||"",
+      description:desc.replace(/\s+/g," ").trim(),
+      procedures,
+      surgery:procedures.filter(isSurgicalIcd9),
+      investigations:procedures.filter(isInvestigationIcd9)
+    };
+  }
+  return null;
+}
+// Alasan sebuah dokumen kondisional menjadi wajib menurut e-klaim berkas ini (null = tidak berubah).
+// Saat ini hanya untuk Rawat Inap: Laporan Operasi. (Rawat Jalan: hasil USG/EKG poli sering hanya
+// ditulis di resume, sehingga kode penunjang belum dijadikan syarat; kodenya tetap dibaca & ditampilkan.)
+function itemRequiredByCoding(entry,item){
+  const c=entry&&entry.claimCoding;
+  if(!c||!item||entry.category!=="rs_inap") return null;
+  if(item.id==="operasi" && c.surgery && c.surgery.length) return `Wajib: e-klaim (INA-CBG ${c.code}) memuat kode operasi ${c.surgery.join(", ")}`;
+  return null;
+}
+function isItemConditional(entry,item){
+  return !!(item&&item.conditional) && !itemRequiredByCoding(entry,item);
+}
+function conditionTagHtml(entry,item){
+  const reason=itemRequiredByCoding(entry,item);
+  if(item.conditional && reason) return `<span class="cond-tag required" title="${escapeAttr(reason)}">Wajib (e-klaim)</span>`;
+  return item.conditional ? '<span class="cond-tag">Kondisional</span>' : '';
+}
+function claimCodingFootHtml(entry){
+  const c=entry&&entry.claimCoding;
+  if(!c) return "";
+  const title=[c.description?`${c.code} ${c.description}`:c.code, c.caseGroupLabel?`Case Group ${c.caseGroup}: ${c.caseGroupLabel}`:"", c.procedures.length?`Kode prosedur: ${c.procedures.join(", ")}`:""].filter(Boolean).join("\n");
+  return ` &middot; <span class="cbg-info" title="${escapeAttr(title)}">INA-CBG ${escapeAttr(c.code)}${c.caseGroupLabel?` (${escapeAttr(c.caseGroupLabel)})`:""}</span>`;
+}
 // Jenis perawatan tercetak jelas di Berkas Klaim Individual (e-klaim), mis.
 // "Jenis Perawatan : 2 - Rawat Jalan". Lebih dapat dipercaya daripada nama file.
 function detectCareTypeCategory(text){
@@ -3724,6 +3809,8 @@ function evaluateAgainstCat(entry, cat){
   if(!entry.sep) entry.sep = extractSepNumber(fullText) || extractSepNumber(entry.name);
   const normalizedDigitalText=stripFormLabels(normalizeDetectionText(digitalText));
   const normalizedFullText=stripFormLabels(normalizeDetectionText(fullText));
+  // Kode INA-CBG & prosedur dari e-klaim (teks digital). Teks belum dimuat -> hasil lama dipertahankan.
+  if(digitalText) entry.claimCoding=parseClaimCoding(digitalText);
   cat.items.forEach(item=>{
     const prev = entry.itemsStatus[item.id];
     const digitalHit = item.keywords.some(kw=>detectionTextIncludes(normalizedDigitalText,kw));
@@ -3737,7 +3824,7 @@ function evaluateAgainstCat(entry, cat){
     }else{
       manual = prev ? prev.manual : false; userTouched = false;
     }
-    const na = item.conditional ? (prev ? !!prev.na : false) : false;
+    const na = isItemConditional(entry,item) ? (prev ? !!prev.na : false) : false;
     const contentWarning = (source!=="none") ? evaluateContentWarning(entry, item) : false;
     status[item.id] = { source, manual, userTouched, na, contentWarning };
   });
@@ -3774,7 +3861,7 @@ function fileMissingItems(entry, catOverride){
   // Hanya dokumen WAJIB yang menentukan status "Tidak Lengkap". Dokumen kondisional yang tidak
   // ditemukan tidak menggagalkan berkas; ia dilaporkan sebagai catatan (lihat fileConditionalNotes).
   return cat.items.filter(item=>{
-    if(item.conditional) return false;
+    if(isItemConditional(entry,item)) return false;
     const s = entry.itemsStatus[item.id];
     if(!s) return true;
     return !(s.source==="digital" || s.manual);
@@ -3785,7 +3872,7 @@ function fileMissingItems(entry, catOverride){
 function fileConditionalNotes(entry, catOverride){
   const cat = catOverride || categories[entry.category];
   return cat.items.filter(item=>{
-    if(!item.conditional) return false;
+    if(!isItemConditional(entry,item)) return false;
     const s = entry.itemsStatus[item.id];
     if(!s) return true;
     if(s.na) return false;
@@ -4128,7 +4215,7 @@ function renderResults(){
         <div class="check-pane"></div>
       </div>
       ${ocrHtml}
-      <div class="file-foot">${entry.error ? `<span class="fail-reason">&#9888; ${escapeAttr(entry.error)}</span> &middot; ` : ""}${(entry.sourceOnly && !entry.blob && !entry.error) ? `<span class="fail-reason" title="${escapeAttr(entry.sourceGone?SOURCE_GONE_MESSAGE:SOURCE_MISSING_MESSAGE)}">${entry.sourceGone?"PDF asal tidak ditemukan lagi di lokasinya":"PDF asal belum terpasang"} &mdash; pilih ulang berkas yang sama untuk pratinjau/OCR</span> &middot; ` : ""}${cat.label} &middot; ${cat.items.length} jenis dokumen dicek</div>
+      <div class="file-foot">${entry.error ? `<span class="fail-reason">&#9888; ${escapeAttr(entry.error)}</span> &middot; ` : ""}${(entry.sourceOnly && !entry.blob && !entry.error) ? `<span class="fail-reason" title="${escapeAttr(entry.sourceGone?SOURCE_GONE_MESSAGE:SOURCE_MISSING_MESSAGE)}">${entry.sourceGone?"PDF asal tidak ditemukan lagi di lokasinya":"PDF asal belum terpasang"} &mdash; pilih ulang berkas yang sama untuk pratinjau/OCR</span> &middot; ` : ""}${cat.label} &middot; ${cat.items.length} jenis dokumen dicek${claimCodingFootHtml(entry)}</div>
     `;
 
     card.querySelector(".file-head").addEventListener("click", (e)=>{
@@ -4187,7 +4274,7 @@ function renderResults(){
         const s = entry.itemsStatus[item.id];
         const row = document.createElement("div");
         row.className = "check-item";
-        const naOn = item.conditional && s.na;
+        const naOn = isItemConditional(entry,item) && s.na;
 
         let detectionHtml;
         if(naOn){
@@ -4205,14 +4292,14 @@ function renderResults(){
               <input type="checkbox" class="detect-check" ${s.manual?"checked":""}> Tandai ada (cek manual)
             </label>`;
         }
-        const naToggleHtml = item.conditional ? `
+        const naToggleHtml = isItemConditional(entry,item) ? `
           <label class="na-toggle">
             <input type="checkbox" class="na-check" ${s.na?"checked":""}> Tidak berlaku (N/A)
           </label>` : "";
         const contentWarnHtml = (!naOn && s.contentWarning) ? contentWarnBadgeHtml(s.contentWarning) : "";
 
         row.innerHTML = `
-          <div class="item-name">${escapeAttr(item.name)}${item.conditional?'<span class="cond-tag">Kondisional</span>':''}
+          <div class="item-name">${escapeAttr(item.name)}${conditionTagHtml(entry,item)}
             <span class="item-kw">${escapeAttr(item.keywords.join(", "))||"(tanpa kata kunci)"}</span>
           </div>
           <div class="item-controls">${naToggleHtml}${contentWarnHtml}${detectionHtml}</div>
@@ -5287,7 +5374,7 @@ function buildFileDetailNode(entry, cat, onChange){
       if(!s) return;
       const row = document.createElement("div");
       row.className = "check-item";
-      const naOn = item.conditional && s.na;
+      const naOn = isItemConditional(entry,item) && s.na;
 
       let detectionHtml;
       if(naOn){
@@ -5305,14 +5392,14 @@ function buildFileDetailNode(entry, cat, onChange){
             <input type="checkbox" class="detect-check" ${s.manual?"checked":""}> Tandai ada (cek manual)
           </label>`;
       }
-      const naToggleHtml = item.conditional ? `
+      const naToggleHtml = isItemConditional(entry,item) ? `
         <label class="na-toggle">
           <input type="checkbox" class="na-check" ${s.na?"checked":""}> Tidak berlaku (N/A)
         </label>` : "";
       const contentWarnHtml = (!naOn && s.contentWarning) ? contentWarnBadgeHtml(s.contentWarning) : "";
 
       row.innerHTML = `
-        <div class="item-name">${escapeAttr(item.name)}${item.conditional?'<span class="cond-tag">Kondisional</span>':''}
+        <div class="item-name">${escapeAttr(item.name)}${conditionTagHtml(entry,item)}
           <span class="item-kw">${escapeAttr(item.keywords.join(", "))||"(tanpa kata kunci)"}</span>
         </div>
         <div class="item-controls">${naToggleHtml}${contentWarnHtml}${detectionHtml}</div>

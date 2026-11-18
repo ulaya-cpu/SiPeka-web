@@ -179,6 +179,8 @@
     font-family:'IBM Plex Mono';font-size:9px;text-transform:uppercase;letter-spacing:.05em;
     color:var(--amber);border:1px solid var(--amber);border-radius:10px;padding:1px 6px;margin-left:6px;
   }
+  .cond-tag.required{color:var(--blue);border-color:var(--blue);cursor:help;}
+  .cbg-info{cursor:help;border-bottom:1px dotted currentColor;}
   .item-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;}
   .na-toggle{
     display:flex;align-items:center;gap:5px;font-size:11px;color:#8A6A24;cursor:pointer;user-select:none;white-space:nowrap;
