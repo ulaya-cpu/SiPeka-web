@@ -126,6 +126,23 @@
     cek("OCR tidak menghapus teks hasil baca yang tersimpan", tersimpan.digitalText.length === barisSebelum && baris.length === tersimpan.pageTexts.length, [tersimpan.digitalText.length, barisSebelum, baris.length, tersimpan.pageTexts.length]);
     cek("OCR tidak mengubah berkas lengkap menjadi tidak lengkap", kurang(e7) === kurangSebelumOcr, [kurang(e7), kurangSebelumOcr]);
 
+    // Foto/scan yang tersimpan menyamping atau terbalik harus tetap terbaca: OCR mencoba putaran lain,
+    // sedangkan halaman tegak cukup dibaca sekali.
+    var lembar = document.createElement("canvas"); lembar.width = 1240; lembar.height = 1754;
+    var lg = lembar.getContext("2d"); lg.fillStyle = "#fff"; lg.fillRect(0, 0, 1240, 1754); lg.fillStyle = "#000"; lg.font = "30px Arial";
+    var kalimat = ["SURAT PERINTAH RAWAT INAP", "Nama pasien sudah diperiksa oleh dokter jaga", "Diagnosa awal demam tinggi disertai kejang", "Pasien dirawat di ruang perawatan anak kelas tiga", "Tanda tangan dokter penanggung jawab pelayanan", "Rincian biaya pelayanan pasien rawat inap"];
+    for (var li = 0; li < 24; li++) lg.fillText(kalimat[li % kalimat.length], 80, 120 + li * 62);
+    var tegak = await recognizeCanvasOriented(lembar);
+    cek("halaman tegak dibaca sekali tanpa diputar", tegak.rotation === 0 && tegak.tries === 1 && /perintah rawat inap/i.test(tegak.data.text), [tegak.rotation, tegak.tries]);
+    for (var deg of [90, 180, 270]) {
+      var miring = rotateCanvas(lembar, deg), hasilMiring = await recognizeCanvasOriented(miring);
+      cek("halaman diputar " + deg + " derajat tetap terbaca", hasilMiring.rotation === (360 - deg) % 360 && /perintah rawat inap/i.test(hasilMiring.data.text), [hasilMiring.rotation, hasilMiring.tries, String(hasilMiring.data.text).slice(0, 60)]);
+    }
+    var kosong = document.createElement("canvas"); kosong.width = 600; kosong.height = 800;
+    var kg = kosong.getContext("2d"); kg.fillStyle = "#fff"; kg.fillRect(0, 0, 600, 800);
+    var hasilKosong = await recognizeCanvasOriented(kosong);
+    cek("halaman kosong tidak diputar", hasilKosong.rotation === 0, [hasilKosong.rotation, hasilKosong.tries]);
+
     // Mesin OCR yang mati di tengah jalan tidak boleh membuat halaman gagal: halaman diulang di mesin lain.
     var kanvas = document.createElement("canvas"); kanvas.width = 300; kanvas.height = 120;
     var ktx = kanvas.getContext("2d"); ktx.fillStyle = "#fff"; ktx.fillRect(0, 0, 300, 120); ktx.fillStyle = "#000"; ktx.font = "40px Arial"; ktx.fillText("UJI 12345", 20, 75);
@@ -135,6 +152,12 @@
     var hasilTambahan = null, galatTambahan = null;
     try { hasilTambahan = await recognizeCanvasWithTesseract(kanvas); } catch (err) { galatTambahan = String(err && err.message || err); }
     cek("mesin OCR tambahan mati -> halaman tetap terbaca di mesin lain", !!hasilTambahan && /12345/.test(hasilTambahan.data.text) && ocrEngineSlots.indexOf(mesinPalsu) < 0 && mesinPalsu.dimatikan === true, [galatTambahan, hasilTambahan && hasilTambahan.data.text]);
+    // Mesin yang menggantung (tidak pernah menjawab) harus diganti setelah batas waktu, bukan ditunggu selamanya.
+    var mesinMacet = { worker: { recognize: function () { return new Promise(function () { }); }, terminate: function () { mesinMacet.dimatikan = true; } }, barrier: Promise.resolve(), pending: -1 };
+    ocrEngineSlots.push(mesinMacet);
+    var tMacet = performance.now(), hasilMacet = null, galatMacet = null;
+    try { hasilMacet = await recognizeCanvasWithTesseract(kanvas, { timeoutMs: 800 }); } catch (err) { galatMacet = String(err && err.message || err); }
+    cek("mesin OCR menggantung -> diganti setelah batas waktu, halaman tetap terbaca", !!hasilMacet && /12345/.test(hasilMacet.data.text) && mesinMacet.dimatikan === true && ocrEngineSlots.indexOf(mesinMacet) < 0 && performance.now() - tMacet < 30000, [galatMacet, Math.round(performance.now() - tMacet)]);
     var utama = ocrEngineSlots[0].worker;
     utama.recognize = function () { return Promise.reject(new Error("mesin utama mati")); };
     var hasilUtama = null, galatUtama = null;

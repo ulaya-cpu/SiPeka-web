@@ -31,8 +31,8 @@ window.addEventListener("unhandledrejection", e=>{
 
 /* Versi aplikasi. Naikkan setiap kali ada perubahan yang dirilis; nilai ini tampil di layar dan
    ikut tertulis di laporan Excel/CSV agar hasil pemeriksaan bisa ditelusuri ke versinya. */
-const SIPEKA_VERSION = "1.4.5";
-const SIPEKA_VERSION_DATE = "2026-11-17";
+const SIPEKA_VERSION = "1.4.6";
+const SIPEKA_VERSION_DATE = "2026-11-18";
 
 // Pustaka PDF disertakan di dalam aplikasi (folder vendor/) agar tidak bergantung pada internet.
 // CDN di bawah hanya cadangan bila berkas lokal gagal dimuat.
@@ -2813,12 +2813,102 @@ function startExtraOcrEngines(){
     })();
   }
 }
+/* ---------------- Arah halaman scan (miring 90°/270° atau terbalik 180°) ----------------
+   Foto HP (mis. CamScanner) sering tersimpan menyamping/terbalik; Tesseract lalu hanya menghasilkan
+   simbol acak. Langkah: (1) baca seperti biasa; (2) bila hasilnya buruk, tebak arah dari pola tinta
+   (baris teks membuat profil horizontal bergerigi) lalu coba putaran yang masuk akal; (3) putaran
+   hanya dipakai bila skornya JELAS lebih baik. Halaman yang sudah terbaca baik tidak dibaca ulang. */
+// Skor mutu hasil OCR: jumlah huruf dari kata yang "masuk akal" (>=3 huruf, ada vokal, tanpa huruf
+// berulang 3x, keyakinan mesin >=60). Simbol acak dari halaman menyamping menghasilkan skor ~0.
+function ocrResultQuality(result){
+  const data=(result&&result.data)||{};
+  const words=Array.isArray(data.words)?data.words:null;
+  let good=0,total=0;
+  const consider=(raw,conf)=>{
+    const t=String(raw||"").toLowerCase().replace(/[^a-z]/g,"");
+    if(t.length<2) return;
+    total+=t.length;
+    if(t.length>=3 && /[aiueo]/.test(t) && /[^aiueo]/.test(t) && !/(.)\1\1/.test(t) && conf>=60) good+=t.length;
+  };
+  if(words) words.forEach(w=>consider(w.text,Number(w.confidence)||0));
+  else String(data.text||"").split(/\s+/).forEach(w=>consider(w,100));
+  return {good,total,ratio:total?good/total:0};
+}
+function ocrQualityIsGood(q){ return q.good>=80 && q.ratio>=0.55; }
+// Perkiraan arah dari pola tinta: >1 berarti baris teks mendatar (0°/180°), <1 berarti tegak (90°/270°).
+function inkOrientationRatio(canvas){
+  try{
+    const s=Math.min(1,400/Math.max(canvas.width,canvas.height));
+    const w=Math.max(8,Math.round(canvas.width*s)), h=Math.max(8,Math.round(canvas.height*s));
+    const small=document.createElement("canvas"); small.width=w; small.height=h;
+    const g=small.getContext("2d",{willReadFrequently:true});
+    g.fillStyle="#fff"; g.fillRect(0,0,w,h); g.drawImage(canvas,0,0,w,h);
+    const px=g.getImageData(0,0,w,h).data, rows=new Float64Array(h), cols=new Float64Array(w);
+    for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+      const i=(y*w+x)*4, dark=(px[i]*0.299+px[i+1]*0.587+px[i+2]*0.114)<140?1:0;
+      rows[y]+=dark; cols[x]+=dark;
+    }
+    small.width=1; small.height=1;
+    // Kekasaran profil: rata-rata loncatan antar baris/kolom bersebelahan, dibagi rata-ratanya.
+    const rough=arr=>{ let d=0,m=0; for(let i=0;i<arr.length;i++){ m+=arr[i]; if(i) d+=Math.abs(arr[i]-arr[i-1]); } return m?d/m:0; };
+    const r=rough(rows), c=rough(cols);
+    return c>0 ? r/c : 1;
+  }catch(e){ return 1; }
+}
+function rotateCanvas(canvas,degrees){
+  const out=document.createElement("canvas");
+  const side=degrees===90||degrees===270;
+  out.width=side?canvas.height:canvas.width; out.height=side?canvas.width:canvas.height;
+  const g=out.getContext("2d",{alpha:false});
+  g.fillStyle="#fff"; g.fillRect(0,0,out.width,out.height);
+  g.translate(out.width/2,out.height/2); g.rotate(degrees*Math.PI/180);
+  g.drawImage(canvas,-canvas.width/2,-canvas.height/2);
+  return out;
+}
+// Membaca satu halaman, mencoba putaran lain bila perlu. Mengembalikan hasil Tesseract terbaik,
+// ditambah `rotation` (derajat searah jarum jam yang dipakai) dan `tries` (jumlah pembacaan).
+async function recognizeCanvasOriented(canvas){
+  const first=await recognizeCanvasWithTesseract(canvas);
+  const q0=ocrResultQuality(first);
+  let best={result:first,q:q0,rotation:0}, tries=1;
+  // Halaman (hampir) kosong tidak perlu diputar: tidak ada teks yang bisa diperbaiki.
+  if(!ocrQualityIsGood(q0) && q0.total>=40){
+    const ratio=inkOrientationRatio(canvas);
+    // Pola tinta hanya menentukan URUTAN coba; halaman terbalik kadang terbaca "tegak" (data Sondosia),
+    // jadi 180 tetap dicoba bila 90/270 tidak berhasil.
+    const candidates = ratio>1.1 ? [180] : [90,270,180];
+    for(const deg of candidates){
+      const turned=rotateCanvas(canvas,deg);
+      let result=null;
+      // Percobaan putaran bersifat tambahan: bila gagal/terlalu lama, cukup dilewati.
+      try{ result=await recognizeCanvasWithTesseract(turned,{timeoutMs:45000,attempts:1}); }
+      catch(err){ console.warn(`Percobaan putaran ${deg} derajat dilewati:`,err); }
+      finally{ turned.width=1; turned.height=1; }
+      tries++;
+      if(!result) continue;
+      const q=ocrResultQuality(result);
+      if(q.good>best.q.good) best={result,q,rotation:deg};
+      if(ocrQualityIsGood(q)) break;
+    }
+    // Putaran hanya dipakai bila jelas lebih baik; selisih kecil bisa sekadar kebetulan.
+    if(best.rotation!==0 && !(best.q.good>=Math.max(40,q0.good*1.5+20))) best={result:first,q:q0,rotation:0};
+  }
+  best.result.rotation=best.rotation;
+  best.result.tries=tries;
+  return best.result;
+}
 // Mengenali satu halaman. Bila mesin yang dipakai gagal (mis. kehabisan memori lalu mati),
 // mesin itu dipensiunkan dan halaman yang sama dicoba SEKALI lagi di mesin lain, sehingga satu
 // mesin yang mati tidak membuat halaman dicatat gagal.
-async function recognizeCanvasWithTesseract(canvas){
+// Batas waktu per halaman: pada data nyata ada halaman yang membuat mesin Tesseract menggantung
+// puluhan menit (biasanya selesai < 15 detik). Mesin yang melewati batas dimatikan lalu diganti,
+// sehingga antrean OCR tidak pernah macet. Waktu dihitung sejak halaman mulai dikerjakan mesin.
+const OCR_PAGE_TIMEOUT_MS=90000;
+async function recognizeCanvasWithTesseract(canvas,options){
+  const timeoutMs=(options&&options.timeoutMs)||OCR_PAGE_TIMEOUT_MS;
+  const attempts=(options&&options.attempts)||2;
   let lastError=null;
-  for(let attempt=0;attempt<2;attempt++){
+  for(let attempt=0;attempt<attempts;attempt++){
     const primary=await ensureTesseractWorker();
     if(!ocrEngineSlots.length || ocrEngineSlots[0].worker!==primary){
       ocrEngineSlots=[{worker:primary,barrier:Promise.resolve(),pending:0}];
@@ -2827,7 +2917,7 @@ async function recognizeCanvasWithTesseract(canvas){
     startExtraOcrEngines();
     const slot=ocrEngineSlots.reduce((best,row)=>(row.pending<best.pending?row:best),ocrEngineSlots[0]);
     slot.pending++;
-    const job=slot.barrier.then(()=>slot.worker.recognize(canvas));
+    const job=slot.barrier.then(()=>withTimeout(slot.worker.recognize(canvas),timeoutMs,"Halaman terlalu lama dikenali mesin OCR."));
     slot.barrier=job.catch(()=>{});
     try{
       const result=await job;
@@ -3115,7 +3205,13 @@ async function runOcrPages(entry, ocrDoc, renderFn, evalFn, options, generation)
       let result;
       try{
         await page.render({canvasContext:context, viewport}).promise;
-        result = await recognizeCanvasWithTesseract(canvas);
+        result = await recognizeCanvasOriented(canvas);
+      }catch(err){
+        // Satu halaman yang terus menggantung (sudah dicoba di mesin baru) tidak boleh menggagalkan
+        // seluruh berkas: halaman itu dicatat tanpa teks dan OCR lanjut ke halaman berikutnya.
+        if(!err || err.code!=="TIMEOUT") throw err;
+        console.warn(`OCR ${entry.name} halaman ${pageNum} dilewati: terlalu lama.`,err);
+        result={data:{text:""}};
       }finally{
         try{ page.cleanup(); }catch(e){}
         canvas.width=1; canvas.height=1;
@@ -4674,7 +4770,7 @@ async function scanKolektifFile(batch, file, statusEl){
       let result;
       try{
         await page.render({canvasContext:canvas.getContext("2d"), viewport}).promise;
-        result = await recognizeCanvasWithTesseract(canvas);
+        result = await recognizeCanvasOriented(canvas);
       }finally{
         try{ page.cleanup(); }catch(e){}
         canvas.width=1; canvas.height=1;
