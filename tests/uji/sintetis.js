@@ -24,6 +24,30 @@
     var bytes = new Uint8Array(out.length); for (var b = 0; b < out.length; b++) bytes[b] = out.charCodeAt(b) & 255;
     return bytes;
   }
+  // Halaman "scan + lapisan teks": gambar satu halaman penuh lalu teks tak terlihat (3 Tr), seperti
+  // keluaran aplikasi scanner yang menjalankan OCR sendiri. lembar = { teks: [...], gambar, tersembunyi }.
+  function makeScanPdf(sheets) {
+    var objs = [], n = sheets.length, fontId = 3, imgId = 4, firstPage = 5;
+    objs[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+    var kids = []; for (var i = 0; i < n; i++) kids.push((firstPage + i * 2) + " 0 R");
+    objs[2] = "<< /Type /Pages /Kids [" + kids.join(" ") + "] /Count " + n + " >>";
+    objs[fontId] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>";
+    objs[imgId] = "<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 4 >>\nstream\nÿ\u0080\u0080ÿ\nendstream";
+    sheets.forEach(function (s, i) {
+      var pageId = firstPage + i * 2, contentId = pageId + 1, body = "";
+      if (s.gambar) body += "q 595 0 0 842 0 0 cm /Im1 Do Q ";
+      if (s.teks.length) body += "BT " + (s.tersembunyi ? "3 Tr " : "") + "/F1 9 Tf 40 800 Td 12 TL " + s.teks.map(function (l) { return "(" + esc(l) + ") Tj T*"; }).join(" ") + " ET";
+      objs[pageId] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 " + fontId + " 0 R >> /XObject << /Im1 " + imgId + " 0 R >> >> /Contents " + contentId + " 0 R >>";
+      objs[contentId] = "<< /Length " + body.length + " >>\nstream\n" + body + "\nendstream";
+    });
+    var out = "%PDF-1.4\n", offsets = [];
+    for (var id = 1; id < objs.length; id++) { offsets[id] = out.length; out += id + " 0 obj\n" + objs[id] + "\nendobj\n"; }
+    var xref = out.length; out += "xref\n0 " + objs.length + "\n0000000000 65535 f \n";
+    for (var k = 1; k < objs.length; k++) out += String(offsets[k]).padStart(10, "0") + " 00000 n \n";
+    out += "trailer\n<< /Size " + objs.length + " /Root 1 0 R >>\nstartxref\n" + xref + "\n%%EOF\n";
+    var bytes = new Uint8Array(out.length); for (var b = 0; b < out.length; b++) bytes[b] = out.charCodeAt(b) & 255;
+    return bytes;
+  }
   var stamp = 1700000000000;
   function pdfFile(name, pages) { return new File([makePdf(pages)], name, { type: "application/pdf", lastModified: stamp++ }); }
 
@@ -308,6 +332,51 @@
     evaluateFile(eNa);
     cek("tanda 'Tidak berlaku' lama tidak bisa menutupi operasi yang tercatat di e-klaim", eNa.itemsStatus.operasi.na === false && kurangId(eNa).indexOf("operasi") >= 0, eNa.itemsStatus.operasi);
     cek("berkas e-klaim rekaan lama (tanpa prosedur) tidak berubah", e1.claimCoding && e1.claimCoding.code === "Q-5-44-0" && e1.claimCoding.procedures.length === 0, e1.claimCoding);
+
+    // Halaman scan yang sudah membawa lapisan teks tak terlihat (hasil OCR scanner, sering salah baca)
+    // tetap dikirim ke OCR SIPEKA bila dokumen wajib belum ditemukan.
+    autoOcrEnabled = false;
+    var s1 = pasien(41), s2 = pasien(42), s3 = pasien(43);
+    var judulRusak = ["RUMAH SAKIT UJI", "RESUME RA.WAT JALAN", "Keterangan Pasien Nama Pasien " + s1.nama, "Diagnosa Utama ( Primer ) K30"];
+    var scanKurang = new File([makeScanPdf([
+      { teks: eklaim(s1) }, { teks: sep(s1) },
+      { teks: judulRusak, gambar: true, tersembunyi: true },          // scan berlapis teks -> calon OCR
+      { teks: riwayat(s1), gambar: true },                             // teks terlihat + logo -> bukan scan
+      { teks: judulRusak, tersembunyi: true }                          // teks tak terlihat tanpa gambar -> bukan scan
+    ])], s1.sep + ".pdf", { type: "application/pdf", lastModified: stamp++ });
+    var scanLengkap = new File([makeScanPdf([
+      { teks: eklaim(s2) }, { teks: sep(s2) }, { teks: riwayat(s2) },
+      { teks: resume(s2), gambar: true, tersembunyi: true }            // judul terbaca benar -> tidak perlu OCR
+    ])], s2.sep + ".pdf", { type: "application/pdf", lastModified: stamp++ });
+    var scanKosong = new File([makeScanPdf([
+      { teks: eklaim(s3) }, { teks: sep(s3) }, { teks: riwayat(s3) },
+      { teks: [], gambar: true }                                        // scan polos -> calon OCR lewat aturan lama
+    ])], s3.sep + ".pdf", { type: "application/pdf", lastModified: stamp++ });
+    var hasilScan = await processFilesBatch([scanKurang, scanLengkap, scanKosong]);
+    cek("tiga berkas scan berlapis teks masuk antrean", hasilScan.added === 3, hasilScan);
+    var es1 = entri(s1), es2 = entri(s2), es3 = entri(s3);
+    await ensureAnalysisData(es1); await ensureAnalysisData(es2); await ensureAnalysisData(es3);
+    cek("scan berlapis teks salah baca: resume belum ditemukan dari teks digital", kurang(es1) === "resume_poli", kurang(es1));
+    cek("scan berlapis teks salah baca -> halaman itu saja jadi calon OCR", JSON.stringify(es1.ocrCandidates) === "[2]", es1.ocrCandidates);
+    cek("berkas lengkap: halaman scan berlapis teks tidak di-OCR ulang", kurang(es2) === "" && es2.ocrCandidates.length === 0, [kurang(es2), es2.ocrCandidates]);
+    cek("halaman scan polos tetap calon OCR (aturan lama)", JSON.stringify(es3.ocrCandidates) === "[3]", es3.ocrCandidates);
+    var halPdf = await openPdfDocument(scanKurang, scanKurang.name, 30000);
+    var temuan = await findHiddenTextScanPages(halPdf, new Set([2]));
+    cek("halaman yang sudah calon OCR dilewati saat pemeriksaan lapisan teks", temuan.length === 0, temuan);
+    await destroyPdfDocument(halPdf);
+
+    // Kata kunci yang ditambahkan pengguna bertahan saat aplikasi dibuka ulang.
+    var sepInap = categories.rs_inap.items.find(function (it) { return it.id === "sep"; });
+    var kwAsli = sepInap.keywords.slice(), revAsli = categories.rs_inap.kwRev;
+    sepInap.keywords = kwAsli.concat(["no.sep"]); categories.rs_inap.kwRev = BUILTIN_KEYWORD_REV;
+    applyBuiltInKeywordAliases(); applyBuiltInKeywordAliases();
+    cek("kata kunci SEP tambahan pengguna tidak dihapus saat aplikasi dibuka ulang", sepInap.keywords.indexOf("no.sep") >= 0, sepInap.keywords);
+    sepInap.keywords = kwAsli.concat(["no.sep"]); categories.rs_inap.kwRev = 1;
+    applyBuiltInKeywordAliases();
+    cek("sesi sangat lama: 'no.sep' bawaan lama tetap dibuang sekali", sepInap.keywords.indexOf("no.sep") < 0 && categories.rs_inap.kwRev === BUILTIN_KEYWORD_REV, sepInap.keywords);
+    sepInap.keywords.push("no.sep"); applyBuiltInKeywordAliases();
+    cek("setelah dibuang sekali, 'no.sep' yang ditambahkan lagi tetap ada", sepInap.keywords.indexOf("no.sep") >= 0, sepInap.keywords);
+    sepInap.keywords = kwAsli; categories.rs_inap.kwRev = revAsli;
 
     await LAB.send({ uji: "sintetis", lulus: lulus.length, gagal: gagal, total: lulus.length + gagal.length, versi: SIPEKA_VERSION });
   });

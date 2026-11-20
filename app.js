@@ -31,8 +31,8 @@ window.addEventListener("unhandledrejection", e=>{
 
 /* Versi aplikasi. Naikkan setiap kali ada perubahan yang dirilis; nilai ini tampil di layar dan
    ikut tertulis di laporan Excel/CSV agar hasil pemeriksaan bisa ditelusuri ke versinya. */
-const SIPEKA_VERSION = "1.4.7";
-const SIPEKA_VERSION_DATE = "2026-11-19";
+const SIPEKA_VERSION = "1.4.8";
+const SIPEKA_VERSION_DATE = "2026-11-20";
 
 // Pustaka PDF disertakan di dalam aplikasi (folder vendor/) agar tidak bergantung pada internet.
 // CDN di bawah hanya cadangan bila berkas lokal gagal dimuat.
@@ -1607,7 +1607,10 @@ const BUILTIN_KEYWORD_ALIASES = {
 // Kata kunci bawaan lama yang terbukti terlalu umum. Dihapus SATU KALI dari sesi lama
 // (ditandai cat.kwRev) supaya kata kunci yang sengaja ditambahkan lagi oleh pengguna tidak ikut hilang.
 // "resep" saja cocok dengan label "Resep :" pada catatan SOAP, walau tidak ada lembar resep.
+// "No. SEP" juga tercetak di resume rawat inap, jadi dibuang dari SEP. Dulu dibuang di setiap
+// pembukaan aplikasi; sekarang sekali saja, supaya kata kunci yang sengaja ditambahkan pengguna tetap ada.
 const BUILTIN_KEYWORD_REMOVALS = {
+  rs_inap:{ sep:["no.sep","nomor sep","no sep"] },
   rs_jalan:{ resep:["resep"] }
 };
 const BUILTIN_KEYWORD_REV = 2;
@@ -1621,11 +1624,7 @@ function applyBuiltInKeywordAliases(){
       if(!item) return;
       if(itemId==="sep"&&/Surat Elegibilitas Peserta/i.test(item.name||"")) item.name="Surat Eligibilitas Peserta (SEP)";
       const drop=removals[itemId]||[];
-      const existingKeywords=(item.keywords||[]).filter(value=>{
-        const v=String(value).trim().toLowerCase();
-        if(itemId==="sep"&&["no.sep","nomor sep","no sep"].includes(v)) return false;
-        return !drop.includes(v);
-      });
+      const existingKeywords=(item.keywords||[]).filter(value=>!drop.includes(String(value).trim().toLowerCase()));
       const merged=new Set([...existingKeywords,...aliases].map(value=>String(value).trim().toLowerCase()).filter(Boolean));
       item.keywords=Array.from(merged);
     });
@@ -2037,6 +2036,7 @@ async function analyzeEntryPdf(entry){
   entry.pending = false;
   applyDetectedCategory(entry);
   evaluateFile(entry);
+  if(!entry.error&&categories[entry.category]) await addHiddenTextScanCandidates(entry,fileMissingItems(entry).length);
   if(!entry.error&&entry.ocrCandidates.length) enqueueAutoOcr(entry);
   dirtyActiveIds.add(entry.id);
   dirtyAnalysisIds.add(entry.id);
@@ -2952,6 +2952,45 @@ function retireOcrEngine(slot,err){
 function ocrCandidatePages(entry){
   if(Array.isArray(entry.ocrCandidates)) return entry.ocrCandidates.slice();
   return (entry.pageTexts||[]).map((t,idx)=>({idx,len:String(t||"").trim().length})).filter(x=>x.len<20).map(x=>x.idx);
+}
+// Halaman scan yang sudah diberi lapisan teks tak terlihat oleh aplikasi scanner/penggabung PDF
+// (gambar satu halaman + teks mode 3). Teks itu sering salah baca ("RESUME RA.WAT JALAN"), tetapi
+// karena halamannya "punya teks", aturan <20 karakter tidak pernah mengirimnya ke OCR.
+// Hanya diperiksa bila berkas belum lengkap, karena perlu membaca daftar operator tiap halaman (~60 ms).
+async function findHiddenTextScanPages(pdfDoc, skip){
+  const OPS=window.pdfjsLib&&window.pdfjsLib.OPS;
+  if(!pdfDoc||!OPS) return [];
+  const imageOps=new Set([OPS.paintImageXObject,OPS.paintInlineImageXObject,OPS.paintJpegXObject,OPS.paintImageXObjectRepeat].filter(op=>op!=null));
+  const found=[];
+  for(let p=1;p<=pdfDoc.numPages;p++){
+    if(skip&&skip.has(p-1)) continue;
+    let page=null;
+    try{
+      page=await withTimeout(pdfDoc.getPage(p),20000,`Halaman ${p} tidak merespons.`);
+      const ops=await withTimeout(page.getOperatorList(),20000,`Halaman ${p} tidak merespons.`);
+      let hasImage=false, hasHiddenText=false;
+      for(let i=0;i<ops.fnArray.length&&!(hasImage&&hasHiddenText);i++){
+        const fn=ops.fnArray[i];
+        if(imageOps.has(fn)) hasImage=true;
+        else if(fn===OPS.setTextRenderingMode&&ops.argsArray[i]&&ops.argsArray[i][0]===3) hasHiddenText=true;
+      }
+      if(hasImage&&hasHiddenText) found.push(p-1);
+    }catch(err){
+      // Halaman bermasalah cukup dilewati; hasil teks digital tetap dipakai.
+      console.warn("Pemeriksaan lapisan teks halaman",p,"dilewati:",err);
+    }finally{
+      if(page){ try{ page.cleanup(); }catch(e){} }
+    }
+    if(p%10===0) await yieldToBrowser();
+  }
+  return found;
+}
+async function addHiddenTextScanCandidates(entry, missingCount){
+  if(entry.error||!entry.pdfDoc||!missingCount) return;
+  const current=new Set(entry.ocrCandidates||[]);
+  const extra=await findHiddenTextScanPages(entry.pdfDoc,current);
+  if(!extra.length) return;
+  entry.ocrCandidates=[...current,...extra].sort((a,b)=>a-b);
 }
 function ocrProcessedPageSet(entry){
   entry.ocr=entry.ocr||{running:false,done:false,error:null,progress:"",processedPages:[]};
@@ -5020,6 +5059,11 @@ async function analyzeBatchPatientEntry(batch,entry,isAutoRetry){
       full+=t+"\n";
     }
     entry.digitalText=full.toLowerCase();
+    const cat=kolektifCategories[batch.service];
+    if(cat){
+      evaluateAgainstCat(entry,cat);
+      await addHiddenTextScanCandidates(entry,fileMissingItems(entry,cat).length);
+    }
   }catch(err){
     const info=classifyPdfError(err);
     entry.error=info.message;
